@@ -1,0 +1,54 @@
+{
+  "name": "directus-migration-tool",
+  "version": "1.0.0",
+  "description": "Standalone web application for migrating data between Directus instances",
+  "keywords": [
+    "directus",
+    "migration",
+    "data-transfer",
+    "export",
+    "import",
+    "web-app"
+  ],
+  "author": {
+    "name": "Migration Tool",
+    "email": "anhvv11@fpt.com"
+  },
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:5000": "vite --port 5000",
+    "dev:8080": "vite --port 8080",
+    "dev:9000": "vite --port 9000",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "type-check": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@directus/sdk": "^17.0.0",
+    "clsx": "^2.0.0",
+    "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.294.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/file-saver": "^2.0.7",
+    "@types/react": "^18.2.37",
+    "@types/react-dom": "^18.2.15",
+    "@typescript-eslint/eslint-plugin": "^6.10.0",
+    "@typescript-eslint/parser": "^6.10.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^8.53.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.4",
+    "typescript": "^5.2.2",
+    "vite": "^4.5.14"
+  }
+}
