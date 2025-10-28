@@ -37,10 +37,29 @@ export function AccessControlManager({
   const [analysis, setAnalysis] = useState<AccessControlAnalysis | null>(null);
   const [targetRoles, setTargetRoles] = useState<DirectusRole[]>([]);
   const [targetPolicies, setTargetPolicies] = useState<DirectusPolicy[]>([]);
+  const [targetPermissions, setTargetPermissions] = useState<DirectusPermission[]>([]);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'selection' | 'migrate' | 'results'>('selection');
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [selectedPolicies, setSelectedPolicies] = useState<string[]>([]);
+  const [selectedPermissions, setSelectedPermissions] = useState<(string | number)[]>([]);
+  const [permissionFilter, setPermissionFilter] = useState<'all' | 'related' | 'orphaned'>('all');
+  const [policyFilter, setPolicyFilter] = useState<'all' | 'existing' | 'new'>('all');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'existing' | 'new'>('all');
+  
+  // Permission grouping states
+  const [permissionSearch, setPermissionSearch] = useState('');
+  const [permissionsPerPage, setPermissionsPerPage] = useState(50);
+  const [groupPages, setGroupPages] = useState<Record<string, number>>({});
+  const [showSystemPermissions, setShowSystemPermissions] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({
+    'faq-policy': true,
+    'custom-policy-35a39ef5': true,
+    'admin-policies': true,
+    'custom-policies': true,
+    'orphaned': true,
+    'system': true
+  });
   const [migrationOptions, setMigrationOptions] = useState<AccessControlMigrationOptions>({
     roles: { preserveIds: true, skipAdminRoles: true },
     policies: { preserveIds: true, skipAdminPolicies: true },
@@ -74,6 +93,251 @@ export function AccessControlManager({
     return existsInTarget ? 'Existing' : 'New';
   };
 
+  // Filter functions
+  const getFilteredPermissions = () => {
+    let filtered = sourcePermissions;
+    
+    // Apply policy filter first
+    if (selectedPolicies.length > 0) {
+      filtered = filtered.filter(p => selectedPolicies.includes(p.policy || ''));
+    }
+    
+    // Apply permission filter
+    switch (permissionFilter) {
+      case 'related':
+        return filtered.filter(p => p.policy && selectedPolicies.includes(p.policy));
+      case 'orphaned':
+        return filtered.filter(p => !p.policy);
+      default:
+        return filtered;
+    }
+  };
+
+  const getFilteredPolicies = () => {
+    switch (policyFilter) {
+      case 'existing':
+        return sourcePolicies.filter(p => getPolicyStatus(p) === 'Existing');
+      case 'new':
+        return sourcePolicies.filter(p => getPolicyStatus(p) === 'New');
+      default:
+        return sourcePolicies;
+    }
+  };
+
+  const getFilteredRoles = () => {
+    switch (roleFilter) {
+      case 'existing':
+        return sourceRoles.filter(r => getRoleStatus(r) === 'Existing');
+      case 'new':
+        return sourceRoles.filter(r => getRoleStatus(r) === 'New');
+      default:
+        return sourceRoles;
+    }
+  };
+
+  // Auto-select permissions when policies change
+  const updatePermissionsFromPolicies = (policyIds: string[]) => {
+    const relatedPermissions = sourcePermissions.filter(permission => 
+      permission.policy && policyIds.includes(permission.policy)
+    );
+    console.log('🔍 DEBUG: Auto-selecting permissions from policies:', policyIds);
+    console.log('🔍 DEBUG: Related permissions found:', relatedPermissions.length);
+    relatedPermissions.forEach((p: any) => {
+      console.log(`  - Auto-selecting ID: ${p.id} (${p.collection}.${p.action})`);
+    });
+    setSelectedPermissions(relatedPermissions.map(p => p.id));
+  };
+
+  // Group permissions by policy
+  const getGroupedPermissions = () => {
+    // Special policy IDs that get their own groups
+    const specialPolicyIds = {
+      '8c359f36-2c9d-4807-943f-dee31d880c52': {
+        title: 'FAQ Policy Permissions',
+        color: '#10b981'
+      },
+      '35a39ef5-afd7-4a43-b0d7-4fae3590b5e0': {
+        title: 'Custom Policy (35a39ef5) Permissions', 
+        color: '#8b5cf6'
+      }
+    };
+    
+    // Apply search filter first
+    let filteredPermissions = sourcePermissions.filter(permission => {
+      if (!permissionSearch) return true;
+      const searchLower = permissionSearch.toLowerCase();
+      return (
+        permission.collection.toLowerCase().includes(searchLower) ||
+        permission.action.toLowerCase().includes(searchLower) ||
+        (permission.policy && permission.policy.toLowerCase().includes(searchLower))
+      );
+    });
+
+    // Find policies with many permissions (threshold: 25+) that aren't already special
+    const policyPermissionCounts = filteredPermissions.reduce((acc: any, permission) => {
+      if (permission.policy && !specialPolicyIds[permission.policy as keyof typeof specialPolicyIds]) {
+        acc[permission.policy] = (acc[permission.policy] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    const largePolicyIds = Object.keys(policyPermissionCounts)
+      .filter(policyId => policyPermissionCounts[policyId] >= 25)
+      .sort((a, b) => policyPermissionCounts[b] - policyPermissionCounts[a]); // Sort by permission count descending
+
+    // Color palette for dynamic groups
+    const colors = [
+      '#f97316', // orange
+      '#06b6d4', // cyan
+      '#84cc16', // lime
+      '#ec4899', // pink
+      '#6366f1', // indigo
+      '#f59e0b', // amber
+      '#ef4444', // red
+      '#10b981', // emerald
+      '#8b5cf6', // violet
+      '#f97316', // orange (repeat)
+      '#06b6d4', // cyan (repeat)
+      '#84cc16'  // lime (repeat)
+    ];
+
+    const groups: any = {};
+
+    // Add special policy groups
+    Object.entries(specialPolicyIds).forEach(([policyId, config]) => {
+      const groupKey = `special-${policyId.substring(0, 8)}`;
+      groups[groupKey] = {
+        title: config.title,
+        permissions: filteredPermissions.filter(p => p.policy === policyId),
+        color: config.color
+      };
+    });
+
+    // Add dynamic large policy groups
+    largePolicyIds.forEach((policyId, index) => {
+      const policy = sourcePolicies.find(p => p.id === policyId);
+      const policyName = policy?.name || `Policy ${policyId.substring(0, 8)}`;
+      const groupKey = `large-policy-${policyId.substring(0, 8)}`;
+      const permissionCount = policyPermissionCounts[policyId];
+      
+      groups[groupKey] = {
+        title: policyName,
+        permissions: filteredPermissions.filter(p => p.policy === policyId),
+        color: colors[index % colors.length]
+      };
+    });
+
+    // Get all special and large policy IDs for exclusion
+    const excludedPolicyIds = [
+      ...Object.keys(specialPolicyIds),
+      ...largePolicyIds
+    ];
+
+    // Add standard groups
+    groups['admin-policies'] = {
+      title: 'Admin Policy Permissions',
+      permissions: filteredPermissions.filter(p => {
+        if (!p.policy || excludedPolicyIds.includes(p.policy)) return false;
+        const policy = sourcePolicies.find(pol => pol.id === p.policy);
+        return policy?.admin_access === true;
+      }),
+      color: '#dc2626'
+    };
+
+    groups['custom-policies'] = {
+      title: 'Other Custom Policy Permissions',
+      permissions: filteredPermissions.filter(p => {
+        if (!p.policy || excludedPolicyIds.includes(p.policy)) return false;
+        const policy = sourcePolicies.find(pol => pol.id === p.policy);
+        return policy?.admin_access !== true;
+      }),
+      color: '#3b82f6'
+    };
+
+    groups['orphaned'] = {
+      title: 'Orphaned Permissions',
+      permissions: filteredPermissions.filter(p => !p.policy),
+      color: '#6b7280'
+    };
+
+    groups['system'] = {
+      title: 'System Permissions',
+      permissions: filteredPermissions.filter(p => p.collection.startsWith('directus_')),
+      color: '#f59e0b'
+    };
+
+    // Remove system permissions from other groups if they're hidden
+    if (!showSystemPermissions) {
+      Object.keys(groups).forEach(key => {
+        if (key !== 'system') {
+          groups[key as keyof typeof groups].permissions = groups[key as keyof typeof groups].permissions.filter(
+            (p: any) => !p.collection.startsWith('directus_')
+          );
+        }
+      });
+    }
+
+    return groups;
+  };
+
+  // Toggle group collapse
+  const toggleGroup = (groupKey: string) => {
+    setCollapsedGroups(prev => ({
+      ...prev,
+      [groupKey]: prev[groupKey] !== undefined ? !prev[groupKey] : false // Default to expanded for new groups when clicked
+    }));
+  };
+
+  // Get paginated permissions for a group
+  const getPaginatedPermissions = (permissions: any[], groupKey: string) => {
+    const isCollapsed = collapsedGroups[groupKey] !== undefined ? collapsedGroups[groupKey] : true; // Default collapsed
+    if (isCollapsed) return [];
+    
+    const currentPage = groupPages[groupKey] || 1;
+    const startIndex = (currentPage - 1) * permissionsPerPage;
+    const endIndex = startIndex + permissionsPerPage;
+    return permissions.slice(startIndex, endIndex);
+  };
+
+  // Set page for specific group
+  const setGroupPage = (groupKey: string, page: number) => {
+    setGroupPages(prev => ({
+      ...prev,
+      [groupKey]: page
+    }));
+  };
+
+  // Get group status (existing/new/mixed)
+  const getGroupStatus = (permissions: any[]) => {
+    if (permissions.length === 0) return { status: 'empty', existing: 0, new: 0 };
+    
+    let existingCount = 0;
+    let newCount = 0;
+    
+    permissions.forEach(permission => {
+      // Check if permission exists in target by matching collection + action + policy
+      const existsInTarget = targetPermissions.some(targetPerm => 
+        targetPerm.collection === permission.collection &&
+        targetPerm.action === permission.action &&
+        targetPerm.policy === permission.policy
+      );
+      
+      if (existsInTarget) {
+        existingCount++;
+      } else {
+        newCount++;
+      }
+    });
+    
+    if (existingCount === permissions.length) {
+      return { status: 'existing', existing: existingCount, new: 0 };
+    } else if (newCount === permissions.length) {
+      return { status: 'new', existing: 0, new: newCount };
+    } else {
+      return { status: 'mixed', existing: existingCount, new: newCount };
+    }
+  };
+
   const loadSourceData = async () => {
     setLoading(true);
     
@@ -89,9 +353,10 @@ export function AccessControlManager({
       ]);
 
       // Load target data for comparison
-      const [targetRolesRes, targetPoliciesRes] = await Promise.all([
+      const [targetRolesRes, targetPoliciesRes, targetPermissionsRes] = await Promise.all([
         targetClient.get('/roles').catch(() => ({ data: [] })), // Fallback if fails
-        targetClient.get('/policies').catch(() => ({ data: [] })) // Fallback if fails
+        targetClient.get('/policies').catch(() => ({ data: [] })), // Fallback if fails
+        targetClient.get('/permissions').catch(() => ({ data: [] })) // Fallback if fails
       ]);
 
       const sourceRolesData = sourceRolesRes.data || [];
@@ -99,12 +364,22 @@ export function AccessControlManager({
       const sourcePermissionsData = sourcePermissionsRes.data || [];
       const targetRolesData = targetRolesRes.data || [];
       const targetPoliciesData = targetPoliciesRes.data || [];
+      const targetPermissionsData = targetPermissionsRes.data || [];
+
+      // Debug logging for ID tracking
+      console.log('🔍 DEBUG: Source permissions loaded:', sourcePermissionsData.length);
+      const newsListingPerms = sourcePermissionsData.filter((p: any) => p.collection === 'news_listing' && p.action === 'create');
+      console.log('🔍 DEBUG: news_listing.create permissions:', newsListingPerms);
+      newsListingPerms.forEach((p: any) => {
+        console.log(`  - ID: ${p.id}, Policy: ${p.policy}, Collection: ${p.collection}, Action: ${p.action}`);
+      });
 
       setSourceRoles(sourceRolesData);
       setSourcePolicies(sourcePoliciesData);
       setSourcePermissions(sourcePermissionsData);
       setTargetRoles(targetRolesData);
       setTargetPolicies(targetPoliciesData);
+      setTargetPermissions(targetPermissionsData);
 
       const analysisResult = analyzeAccessControlData(
         sourceRolesData,
@@ -132,11 +407,11 @@ export function AccessControlManager({
     setValidationResults(null);
     
     try {
-      // Filter selected roles and policies
+      // Filter selected roles, policies, and permissions
       const rolesToMigrate = sourceRoles.filter(role => selectedRoles.includes(role.id));
       const policiesToMigrate = sourcePolicies.filter(policy => selectedPolicies.includes(policy.id));
       const permissionsToMigrate = sourcePermissions.filter(permission => 
-        permission.policy && selectedPolicies.includes(permission.policy)
+        selectedPermissions.includes(permission.id)
       );
 
       // Validation checks
@@ -163,8 +438,8 @@ export function AccessControlManager({
       };
 
       // Check for issues
-      if (rolesToMigrate.length === 0 && policiesToMigrate.length === 0) {
-        validation.warnings.push('No roles or policies selected for migration');
+      if (rolesToMigrate.length === 0 && policiesToMigrate.length === 0 && permissionsToMigrate.length === 0) {
+        validation.warnings.push('No roles, policies, or permissions selected for migration');
         validation.canMigrate = false;
       }
 
@@ -208,14 +483,21 @@ export function AccessControlManager({
     // setStep('migrate'); // Commented out to keep in main screen
     
     try {
-      // Filter selected roles and policies
+      // Filter selected roles, policies, and permissions
       const rolesToMigrate = sourceRoles.filter(role => selectedRoles.includes(role.id));
       const policiesToMigrate = sourcePolicies.filter(policy => selectedPolicies.includes(policy.id));
       
-      // Get permissions related to selected policies
+      // Get explicitly selected permissions
       const permissionsToMigrate = sourcePermissions.filter(permission => 
-        permission.policy && selectedPolicies.includes(permission.policy)
+        selectedPermissions.includes(permission.id)
       );
+      
+      // Debug logging for migration
+      console.log('🔍 DEBUG: Selected permission IDs:', selectedPermissions);
+      console.log('🔍 DEBUG: Permissions to migrate:', permissionsToMigrate.length);
+      permissionsToMigrate.forEach((p: any) => {
+        console.log(`  - Migrating ID: ${p.id}, Collection: ${p.collection}, Action: ${p.action}, Policy: ${p.policy}`);
+      });
       
       const result = await importAccessControlData(
         rolesToMigrate,
@@ -343,10 +625,460 @@ export function AccessControlManager({
                   </div>
                 </div>
 
-                {/* Roles and Policies Selection */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginBottom: '2rem' }}>
-                  {/* Roles Section */}
-                  <div>
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginBottom: '2rem' }}>
+                  <button
+                    onClick={loadSourceData}
+                    disabled={loading}
+                    style={{
+                      backgroundColor: '#6b7280',
+                      color: 'white',
+                      padding: '0.75rem 1.5rem',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: loading ? 0.6 : 1
+                    }}
+                  >
+                    Refresh Data
+                  </button>
+                  
+                  <button
+                    onClick={validateMigration}
+                    disabled={loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0)}
+                    style={{
+                      backgroundColor: '#f59e0b',
+                      color: 'white',
+                      padding: '0.75rem 1.5rem',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 0.6 : 1
+                    }}
+                  >
+                    {isValidating ? 'Validating...' : 'Validate Migration'}
+                  </button>
+                  
+                  <button
+                    onClick={executeMigration}
+                    disabled={loading || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0)}
+                    style={{
+                      backgroundColor: '#dc2626',
+                      color: 'white',
+                      padding: '0.75rem 1.5rem',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: loading || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: loading || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 0.6 : 1
+                    }}
+                  >
+                    {loading ? 'Migrating...' : 'Migrate Selected'}
+                  </button>
+                </div>
+
+                {/* Permissions Section - Grouped */}
+                <div style={{ marginBottom: '2rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <h3 style={{ margin: 0, display: 'flex', alignItems: 'center' }}>
+                      🔑 Permissions ({selectedPermissions.length} selected)
+                    </h3>
+                    
+                    {/* Controls */}
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem' }}>
+                        <input
+                          type="checkbox"
+                          checked={showSystemPermissions}
+                          onChange={(e) => setShowSystemPermissions(e.target.checked)}
+                          style={{ marginRight: '0.5rem' }}
+                        />
+                        Show System
+                      </label>
+                      
+                      <select
+                        value={permissionsPerPage}
+                        onChange={(e) => {
+                          setPermissionsPerPage(Number(e.target.value));
+                          // Reset all group pages when items per page changes
+                          setGroupPages({});
+                        }}
+                        style={{
+                          padding: '0.25rem 0.5rem',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem'
+                        }}
+                      >
+                        <option value={25}>25/page</option>
+                        <option value={50}>50/page</option>
+                        <option value={100}>100/page</option>
+                        <option value={200}>200/page</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Search */}
+                  <div style={{ marginBottom: '1rem' }}>
+                    <input
+                      type="text"
+                      placeholder="Search permissions (collection, action, policy)..."
+                      value={permissionSearch}
+                      onChange={(e) => {
+                        setPermissionSearch(e.target.value);
+                        // Reset all group pages when search changes
+                        setGroupPages({});
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '0.5rem',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '4px',
+                        fontSize: '0.875rem'
+                      }}
+                    />
+                  </div>
+
+                  {/* Permission Groups */}
+                  {(() => {
+                    const groups = getGroupedPermissions();
+                    return Object.entries(groups).map(([groupKey, group]: [string, any]) => {
+                      if (groupKey === 'system' && !showSystemPermissions) return null;
+                      if (group.permissions.length === 0) return null;
+                      
+                      const isCollapsed = collapsedGroups[groupKey] !== undefined ? collapsedGroups[groupKey] : true; // Default collapsed
+                      const displayedPermissions = getPaginatedPermissions(group.permissions, groupKey);
+                      
+                      return (
+                        <div key={groupKey} style={{ marginBottom: '1rem', border: '1px solid #e5e7eb', borderRadius: '6px' }}>
+                          {/* Group Header */}
+                          <div
+                            onClick={() => toggleGroup(groupKey)}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '0.75rem 1rem',
+                              backgroundColor: '#f9fafb',
+                              borderBottom: isCollapsed ? 'none' : '1px solid #e5e7eb',
+                              cursor: 'pointer',
+                              borderRadius: isCollapsed ? '6px' : '6px 6px 0 0'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ fontSize: '0.875rem' }}>
+                                {isCollapsed ? '▶' : '▼'}
+                              </span>
+                              <span style={{ fontWeight: '500', color: group.color }}>
+                                {group.title}
+                              </span>
+                              <span style={{
+                                backgroundColor: group.color,
+                                color: 'white',
+                                padding: '0.125rem 0.5rem',
+                                borderRadius: '12px',
+                                fontSize: '0.75rem'
+                              }}>
+                                {group.permissions.length}
+                              </span>
+                              
+                              {/* Status Badge */}
+                              {(() => {
+                                const groupStatus = getGroupStatus(group.permissions);
+                                if (groupStatus.status === 'empty') return null;
+                                
+                                let badgeColor, badgeText;
+                                if (groupStatus.status === 'existing') {
+                                  badgeColor = '#10b981'; // green
+                                  badgeText = 'Existing';
+                                } else if (groupStatus.status === 'new') {
+                                  badgeColor = '#f59e0b'; // amber
+                                  badgeText = 'New';
+                                } else {
+                                  badgeColor = '#6b7280'; // gray
+                                  badgeText = `Mixed (${groupStatus.existing}/${groupStatus.new})`;
+                                }
+                                
+                                return (
+                                  <span style={{
+                                    backgroundColor: badgeColor,
+                                    color: 'white',
+                                    padding: '0.125rem 0.5rem',
+                                    borderRadius: '12px',
+                                    fontSize: '0.75rem'
+                                  }}>
+                                    {badgeText}
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                            
+                            {!isCollapsed && (
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const groupPermissionIds = group.permissions.map((p: any) => p.id);
+                                    setSelectedPermissions(prev => [...new Set([...prev, ...groupPermissionIds])]);
+                                  }}
+                                  style={{
+                                    backgroundColor: group.color,
+                                    color: 'white',
+                                    padding: '0.25rem 0.5rem',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  Select All
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const groupPermissionIds = group.permissions.map((p: any) => p.id);
+                                    setSelectedPermissions(prev => prev.filter(id => !groupPermissionIds.includes(id as any)));
+                                  }}
+                                  style={{
+                                    backgroundColor: '#6b7280',
+                                    color: 'white',
+                                    padding: '0.25rem 0.5rem',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Group Content */}
+                          {!isCollapsed && (
+                            <div style={{ padding: '0.5rem' }}>
+                              {displayedPermissions.map(permission => (
+                                <label key={permission.id} style={{ 
+                                  display: 'block', 
+                                  padding: '0.5rem', 
+                                  cursor: 'pointer', 
+                                  borderBottom: '1px solid #f3f4f6',
+                                  backgroundColor: selectedPermissions.includes(permission.id) ? '#f0f9ff' : 'transparent'
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedPermissions.includes(permission.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            console.log(`🔍 DEBUG: Adding permission ID ${permission.id} (${permission.collection}.${permission.action}) to selection`);
+                                            setSelectedPermissions(prev => [...prev, permission.id]);
+                                          } else {
+                                            console.log(`🔍 DEBUG: Removing permission ID ${permission.id} (${permission.collection}.${permission.action}) from selection`);
+                                            setSelectedPermissions(prev => prev.filter(id => id !== permission.id));
+                                          }
+                                        }}
+                                        style={{ marginRight: '0.75rem' }}
+                                      />
+                                      <div>
+                                        <div style={{ fontWeight: '500', fontSize: '0.875rem' }}>
+                                          {permission.collection}.{permission.action}
+                                        </div>
+                                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                          ID: {permission.id} • Policy: {permission.policy || 'None'}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </label>
+                              ))}
+                              
+                              {/* Pagination for this group */}
+                              {group.permissions.length > permissionsPerPage && (() => {
+                                const currentPage = groupPages[groupKey] || 1;
+                                const totalPages = Math.ceil(group.permissions.length / permissionsPerPage);
+                                
+                                return (
+                                  <div style={{ 
+                                    display: 'flex', 
+                                    justifyContent: 'center', 
+                                    alignItems: 'center', 
+                                    gap: '0.5rem',
+                                    padding: '0.5rem',
+                                    borderTop: '1px solid #f3f4f6'
+                                  }}>
+                                    <button
+                                      onClick={() => setGroupPage(groupKey, Math.max(1, currentPage - 1))}
+                                      disabled={currentPage === 1}
+                                      style={{
+                                        padding: '0.25rem 0.5rem',
+                                        border: '1px solid #d1d5db',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                                        opacity: currentPage === 1 ? 0.5 : 1
+                                      }}
+                                    >
+                                      Previous
+                                    </button>
+                                    
+                                    <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                      Page {currentPage} of {totalPages}
+                                    </span>
+                                    
+                                    <button
+                                      onClick={() => setGroupPage(groupKey, Math.min(totalPages, currentPage + 1))}
+                                      disabled={currentPage >= totalPages}
+                                      style={{
+                                        padding: '0.25rem 0.5rem',
+                                        border: '1px solid #d1d5db',
+                                        borderRadius: '4px',
+                                        fontSize: '0.75rem',
+                                        cursor: currentPage >= totalPages ? 'not-allowed' : 'pointer',
+                                        opacity: currentPage >= totalPages ? 0.5 : 1
+                                      }}
+                                    >
+                                      Next
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* Policies Section */}
+                <div style={{ marginBottom: '2rem' }}>
+                  <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center' }}>
+                    🔐 Policies ({sourcePolicies.length})
+                  </h3>
+                  
+                  {/* Tab Buttons */}
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                    <button
+                      onClick={() => {
+                        const filtered = getFilteredPolicies();
+                        const newPolicies = filtered.map(p => p.id);
+                        setSelectedPolicies(newPolicies);
+                        updatePermissionsFromPolicies(newPolicies);
+                      }}
+                      style={{
+                        backgroundColor: '#3b82f6',
+                        color: 'white',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() => setPolicyFilter('existing')}
+                      style={{
+                        backgroundColor: policyFilter === 'existing' ? '#f97316' : '#e5e7eb',
+                        color: policyFilter === 'existing' ? 'white' : '#374151',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Existing ({sourcePolicies.filter(p => getPolicyStatus(p) === 'Existing').length})
+                    </button>
+                    <button
+                      onClick={() => setPolicyFilter('new')}
+                      style={{
+                        backgroundColor: policyFilter === 'new' ? '#10b981' : '#e5e7eb',
+                        color: policyFilter === 'new' ? 'white' : '#374151',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      New ({sourcePolicies.filter(p => getPolicyStatus(p) === 'New').length})
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedPolicies([]);
+                        setPolicyFilter('all');
+                        setSelectedPermissions([]);
+                      }}
+                      style={{
+                        backgroundColor: '#6b7280',
+                        color: 'white',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  {/* Policies List */}
+                  <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.5rem' }}>
+                    {getFilteredPolicies().map(policy => {
+                      const relatedPermissions = sourcePermissions.filter(p => p.policy === policy.id);
+                      return (
+                        <label key={policy.id} style={{ display: 'block', padding: '0.5rem', cursor: 'pointer', borderBottom: '1px solid #f3f4f6' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={selectedPolicies.includes(policy.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    const newPolicies = [...selectedPolicies, policy.id];
+                                    setSelectedPolicies(newPolicies);
+                                    updatePermissionsFromPolicies(newPolicies);
+                                  } else {
+                                    const newPolicies = selectedPolicies.filter(id => id !== policy.id);
+                                    setSelectedPolicies(newPolicies);
+                                    updatePermissionsFromPolicies(newPolicies);
+                                  }
+                                }}
+                                style={{ marginRight: '0.75rem' }}
+                              />
+                              <div>
+                                <div style={{ fontWeight: '500', fontSize: '0.875rem' }}>{policy.name}</div>
+                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  Permissions: {relatedPermissions.length} • ID: {policy.id}
+                                </div>
+                              </div>
+                            </div>
+                            <span style={{
+                              backgroundColor: getPolicyStatus(policy) === 'Admin' ? '#dc2626' : getPolicyStatus(policy) === 'New' ? '#10b981' : '#f97316',
+                              color: 'white',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '12px',
+                              fontSize: '0.75rem'
+                            }}>
+                              {getPolicyStatus(policy)}
+                            </span>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Roles Section */}
+                <div style={{ marginBottom: '2rem' }}>
                     <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center' }}>
                       👥 Roles ({sourceRoles.length})
                     </h3>
@@ -354,7 +1086,10 @@ export function AccessControlManager({
                     {/* Tab Buttons */}
                     <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
                       <button
-                        onClick={() => setSelectedRoles(sourceRoles.map(r => r.id))}
+                        onClick={() => {
+                          const filtered = getFilteredRoles();
+                          setSelectedRoles(filtered.map(r => r.id));
+                        }}
                         style={{
                           backgroundColor: '#3b82f6',
                           color: 'white',
@@ -368,31 +1103,38 @@ export function AccessControlManager({
                         Select All
                       </button>
                       <button
+                        onClick={() => setRoleFilter('existing')}
                         style={{
-                          backgroundColor: '#f97316',
-                          color: 'white',
+                          backgroundColor: roleFilter === 'existing' ? '#f97316' : '#e5e7eb',
+                          color: roleFilter === 'existing' ? 'white' : '#374151',
                           padding: '0.5rem 0.75rem',
                           border: 'none',
                           borderRadius: '4px',
+                          cursor: 'pointer',
                           fontSize: '0.75rem'
                         }}
                       >
                         Existing ({sourceRoles.filter(r => getRoleStatus(r) === 'Existing').length})
                       </button>
                       <button
+                        onClick={() => setRoleFilter('new')}
                         style={{
-                          backgroundColor: '#10b981',
-                          color: 'white',
+                          backgroundColor: roleFilter === 'new' ? '#10b981' : '#e5e7eb',
+                          color: roleFilter === 'new' ? 'white' : '#374151',
                           padding: '0.5rem 0.75rem',
                           border: 'none',
                           borderRadius: '4px',
+                          cursor: 'pointer',
                           fontSize: '0.75rem'
                         }}
                       >
                         New ({sourceRoles.filter(r => getRoleStatus(r) === 'New').length})
                       </button>
                       <button
-                        onClick={() => setSelectedRoles([])}
+                        onClick={() => {
+                          setSelectedRoles([]);
+                          setRoleFilter('all');
+                        }}
                         style={{
                           backgroundColor: '#6b7280',
                           color: 'white',
@@ -408,8 +1150,8 @@ export function AccessControlManager({
                     </div>
 
                     {/* Roles List */}
-                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.5rem' }}>
-                      {sourceRoles.map(role => (
+                    <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.5rem' }}>
+                      {getFilteredRoles().map(role => (
                         <label key={role.id} style={{ display: 'block', padding: '0.75rem 0.5rem', cursor: 'pointer', borderBottom: '1px solid #f3f4f6' }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -444,112 +1186,6 @@ export function AccessControlManager({
                       ))}
                     </div>
                   </div>
-
-                  {/* Policies Section */}
-                  <div>
-                    <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center' }}>
-                      🔐 Policies ({sourcePolicies.length})
-                    </h3>
-                    
-                    {/* Tab Buttons */}
-                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                      <button
-                        onClick={() => setSelectedPolicies(sourcePolicies.map(p => p.id))}
-                        style={{
-                          backgroundColor: '#3b82f6',
-                          color: 'white',
-                          padding: '0.5rem 0.75rem',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        Select All
-                      </button>
-                      <button
-                        style={{
-                          backgroundColor: '#f97316',
-                          color: 'white',
-                          padding: '0.5rem 0.75rem',
-                          border: 'none',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        Existing ({sourcePolicies.filter(p => getPolicyStatus(p) === 'Existing').length})
-                      </button>
-                      <button
-                        style={{
-                          backgroundColor: '#10b981',
-                          color: 'white',
-                          padding: '0.5rem 0.75rem',
-                          border: 'none',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        New ({sourcePolicies.filter(p => getPolicyStatus(p) === 'New').length})
-                      </button>
-                      <button
-                        onClick={() => setSelectedPolicies([])}
-                        style={{
-                          backgroundColor: '#6b7280',
-                          color: 'white',
-                          padding: '0.5rem 0.75rem',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        Clear
-                      </button>
-                    </div>
-
-                    {/* Policies List */}
-                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.5rem' }}>
-                      {sourcePolicies.map(policy => {
-                        const relatedPermissions = sourcePermissions.filter(p => p.policy === policy.id);
-                        return (
-                          <label key={policy.id} style={{ display: 'block', padding: '0.75rem 0.5rem', cursor: 'pointer', borderBottom: '1px solid #f3f4f6' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <div style={{ display: 'flex', alignItems: 'center' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedPolicies.includes(policy.id)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setSelectedPolicies(prev => [...prev, policy.id]);
-                                    } else {
-                                      setSelectedPolicies(prev => prev.filter(id => id !== policy.id));
-                                    }
-                                  }}
-                                  style={{ marginRight: '0.75rem' }}
-                                />
-                                <div>
-                                  <div style={{ fontWeight: '500' }}>{policy.name}</div>
-                                  <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                                    Permissions: {relatedPermissions.length} • ID: {policy.id}
-                                  </div>
-                                </div>
-                              </div>
-                              <span style={{
-                                backgroundColor: getPolicyStatus(policy) === 'Admin' ? '#dc2626' : getPolicyStatus(policy) === 'New' ? '#10b981' : '#f97316',
-                                color: 'white',
-                                padding: '0.25rem 0.5rem',
-                                borderRadius: '12px',
-                                fontSize: '0.75rem'
-                              }}>
-                                {getPolicyStatus(policy)}
-                              </span>
-                            </div>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
 
                 {/* Migration Settings */}
                 <div style={{ 
@@ -753,60 +1389,6 @@ export function AccessControlManager({
                     </div>
                   </div>
                 )}
-
-                {/* Action Buttons */}
-                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-                  <button
-                    onClick={loadSourceData}
-                    disabled={loading}
-                    style={{
-                      backgroundColor: '#6b7280',
-                      color: 'white',
-                      padding: '0.75rem 1.5rem',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: loading ? 'not-allowed' : 'pointer',
-                      fontSize: '0.875rem',
-                      opacity: loading ? 0.6 : 1
-                    }}
-                  >
-                    Refresh Data
-                  </button>
-                  
-                  <button
-                    onClick={validateMigration}
-                    disabled={loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0)}
-                    style={{
-                      backgroundColor: '#f59e0b',
-                      color: 'white',
-                      padding: '0.75rem 1.5rem',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 'not-allowed' : 'pointer',
-                      fontSize: '0.875rem',
-                      opacity: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 0.6 : 1
-                    }}
-                  >
-                    {isValidating ? 'Validating...' : 'Validate Migration'}
-                  </button>
-                  
-                  <button
-                    onClick={executeMigration}
-                    disabled={loading || (selectedRoles.length === 0 && selectedPolicies.length === 0)}
-                    style={{
-                      backgroundColor: '#dc2626',
-                      color: 'white',
-                      padding: '0.75rem 1.5rem',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: loading || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 'not-allowed' : 'pointer',
-                      fontSize: '0.875rem',
-                      opacity: loading || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 0.6 : 1
-                    }}
-                  >
-                    {loading ? 'Migrating...' : 'Migrate Selected'}
-                  </button>
-                </div>
               </div>
             ) : (
               <div style={{ textAlign: 'center', padding: '2rem' }}>

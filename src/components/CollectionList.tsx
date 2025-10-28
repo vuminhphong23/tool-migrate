@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { importFromDirectus } from '../lib/apiHandlers'
 import { FlowsManager } from './FlowsManager'
 import { AccessControlManager } from './AccessControlManager'
+import { PermissionVerifier } from './PermissionVerifier'
 import { DocumentationTab } from './DocumentationTab'
 import type { Collection, OperationStatus } from '../types'
 
@@ -30,6 +31,7 @@ export function CollectionList({
   const [titleFilter, setTitleFilter] = useState<string>('')
   const [showFlowsManager, setShowFlowsManager] = useState(false)
   const [showAccessControlManager, setShowAccessControlManager] = useState(false)
+  const [showPermissionVerifier, setShowPermissionVerifier] = useState(false)
   const [showDocumentation, setShowDocumentation] = useState(false)
   const [selectedCollections, setSelectedCollections] = useState<string[]>([])
   const [validationResults, setValidationResults] = useState<Record<string, { isValid: boolean; errors: string[]; warnings: string[] }>>({})
@@ -484,6 +486,23 @@ export function CollectionList({
             }}
           >
             🔐 Access Control Migration
+          </button>
+
+          <button
+            onClick={() => setShowPermissionVerifier(true)}
+            style={{
+              backgroundColor: '#059669',
+              color: 'white',
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: '500',
+              marginLeft: '0.5rem'
+            }}
+          >
+            🔍 Verify Permissions
           </button>
 
           {/* Debug: Show loading states */}
@@ -1429,6 +1448,18 @@ export function CollectionList({
         targetToken={targetToken}
         isVisible={showAccessControlManager}
         onClose={() => setShowAccessControlManager(false)}
+        onStatusUpdate={(status) => onStatusUpdate({
+          type: status.type,
+          message: status.message
+        })}
+      />
+
+      {/* Permission Verifier Modal */}
+      <PermissionVerifier
+        targetUrl={targetUrl}
+        targetToken={targetToken}
+        isVisible={showPermissionVerifier}
+        onClose={() => setShowPermissionVerifier(false)}
         onStatusUpdate={(status) => onStatusUpdate({
           type: status.type,
           message: status.message

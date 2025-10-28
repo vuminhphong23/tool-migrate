@@ -184,6 +184,18 @@ export async function importAccessControlData(
 
     console.log('🚀 Starting access control migration...');
 
+    // Load existing data from target for comparison
+    console.log('📋 Loading existing target data...');
+    const [targetRolesRes, targetPoliciesRes, targetPermissionsRes] = await Promise.all([
+      client.get('/roles').catch(() => ({ data: [] })),
+      client.get('/policies').catch(() => ({ data: [] })),
+      client.get('/permissions').catch(() => ({ data: [] }))
+    ]);
+
+    const existingRoles = targetRolesRes.data || [];
+    const existingPolicies = targetPoliciesRes.data || [];
+    const existingPermissions = targetPermissionsRes.data || [];
+
     // Step 1: Import Roles
     console.log('📋 Importing roles...');
     for (const role of sourceRoles) {
@@ -193,14 +205,30 @@ export async function importAccessControlData(
           continue;
         }
 
-        const { policies, users, ...cleanRole } = role;
-        const roleToImport = {
-          ...cleanRole,
-          id: options?.roles?.preserveIds ? role.id : undefined
-        };
-
-        const response = await client.post('/roles', roleToImport);
-        const importedId = response.data?.id || response.id || role.id;
+        const { users, ...cleanRole } = role; // Keep policies, remove only users
+        
+        // Check if role already exists in target
+        const existingRole = existingRoles.find((r: any) => r.id === role.id);
+        
+        let response;
+        let importedId;
+        
+        if (existingRole && options?.roles?.preserveIds) {
+          // Role exists and we want to preserve IDs -> PATCH
+          console.log(`🔄 Updating existing role: ${role.name} (${role.id})`);
+          const { id, ...roleToUpdate } = cleanRole; // Remove ID from body for PATCH
+          response = await client.patch(`/roles/${role.id}`, roleToUpdate);
+          importedId = role.id; // Keep original ID
+        } else {
+          // Role doesn't exist or we don't preserve IDs -> POST
+          console.log(`➕ Creating new role: ${role.name}`);
+          const roleToImport = {
+            ...cleanRole,
+            id: options?.roles?.preserveIds ? role.id : undefined
+          };
+          response = await client.post('/roles', roleToImport);
+          importedId = response.data?.id || response.id || role.id;
+        }
         
         importedRoles.push({
           originalId: role.id,
@@ -231,15 +259,34 @@ export async function importAccessControlData(
           continue;
         }
 
-        const { permissions, roles, users, ...cleanPolicy } = policy;
-        const policyToImport = {
-          ...cleanPolicy,
-          id: options?.policies?.preserveIds ? policy.id : undefined,
-          ip_access: policy.ip_access || null
-        };
-
-        const response = await client.post('/policies', policyToImport);
-        const importedId = response.data?.id || response.id || policy.id;
+        const { users, ...cleanPolicy } = policy; // Keep permissions and roles relationships, remove only users
+        
+        // Check if policy already exists in target
+        const existingPolicy = existingPolicies.find((p: any) => p.id === policy.id);
+        
+        let response;
+        let importedId;
+        
+        if (existingPolicy && options?.policies?.preserveIds) {
+          // Policy exists and we want to preserve IDs -> PATCH
+          console.log(`🔄 Updating existing policy: ${policy.name} (${policy.id})`);
+          const { id, ...policyToUpdate } = {
+            ...cleanPolicy,
+            ip_access: policy.ip_access || null
+          };
+          response = await client.patch(`/policies/${policy.id}`, policyToUpdate);
+          importedId = policy.id; // Keep original ID
+        } else {
+          // Policy doesn't exist or we don't preserve IDs -> POST
+          console.log(`➕ Creating new policy: ${policy.name}`);
+          const policyToImport = {
+            ...cleanPolicy,
+            id: options?.policies?.preserveIds ? policy.id : undefined,
+            ip_access: policy.ip_access || null
+          };
+          response = await client.post('/policies', policyToImport);
+          importedId = response.data?.id || response.id || policy.id;
+        }
         
         importedPolicies.push({
           originalId: policy.id,
@@ -272,14 +319,33 @@ export async function importAccessControlData(
           continue;
         }
 
-        const { id, ...cleanPermission } = permission;
-        const permissionToImport = {
-          ...cleanPermission,
-          // Note: We create new permission IDs to avoid conflicts
-        };
-
-        const response = await client.post('/permissions', permissionToImport);
-        const importedId = response.data?.id || response.id;
+        // Check if permission already exists in target (by collection + action + policy)
+        const existingPermission = existingPermissions.find((p: any) => 
+          p.collection === permission.collection &&
+          p.action === permission.action &&
+          p.policy === permission.policy
+        );
+        
+        let response;
+        let importedId;
+        
+        if (existingPermission) {
+          // Permission exists -> PATCH
+          console.log(`🔄 Updating existing permission: ${permission.collection}.${permission.action} (${existingPermission.id})`);
+          const { id, ...permissionToUpdate } = permission;
+          response = await client.patch(`/permissions/${existingPermission.id}`, permissionToUpdate);
+          importedId = existingPermission.id; // Keep existing ID
+        } else {
+          // Permission doesn't exist -> POST
+          console.log(`➕ Creating new permission: ${permission.collection}.${permission.action}`);
+          const { id, ...cleanPermission } = permission;
+          const permissionToImport = {
+            ...cleanPermission,
+            // Note: We create new permission IDs to avoid conflicts
+          };
+          response = await client.post('/permissions', permissionToImport);
+          importedId = response.data?.id || response.id;
+        }
         
         importedPermissions.push({
           originalId: permission.id,
