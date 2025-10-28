@@ -87,3 +87,20 @@ jspm_packages/
 
 # DynamoDB Local files
 .dynamodb/
+
+# Vite specific
+*.local
+
+# TypeScript
+*.tsbuildinfo
+
+# Temporary files
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+
+# Git setup files
+git-setup.bat

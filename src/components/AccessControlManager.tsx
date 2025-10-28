@@ -9,6 +9,7 @@ import {
   type DirectusPolicy,
   type DirectusPermission
 } from '../lib/accessControlHandler';
+import { DirectusClient } from '../lib/DirectusClient';
 
 interface AccessControlManagerProps {
   sourceUrl: string;
@@ -34,6 +35,8 @@ export function AccessControlManager({
   const [sourcePolicies, setSourcePolicies] = useState<DirectusPolicy[]>([]);
   const [sourcePermissions, setSourcePermissions] = useState<DirectusPermission[]>([]);
   const [analysis, setAnalysis] = useState<AccessControlAnalysis | null>(null);
+  const [targetRoles, setTargetRoles] = useState<DirectusRole[]>([]);
+  const [targetPolicies, setTargetPolicies] = useState<DirectusPolicy[]>([]);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'selection' | 'migrate' | 'results'>('selection');
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
@@ -44,6 +47,8 @@ export function AccessControlManager({
     permissions: { validateCollections: true, skipInvalidPermissions: true }
   });
   const [migrationResults, setMigrationResults] = useState<any>(null);
+  const [validationResults, setValidationResults] = useState<any>(null);
+  const [isValidating, setIsValidating] = useState(false);
 
   // Load source data when modal opens
   useEffect(() => {
@@ -52,26 +57,66 @@ export function AccessControlManager({
     }
   }, [isVisible, sourceUrl, sourceToken]);
 
+  // Helper functions to determine status
+  const getRoleStatus = (role: DirectusRole): 'Admin' | 'Existing' | 'New' => {
+    if (role.admin_access) return 'Admin';
+    const existsInTarget = targetRoles.some(targetRole => 
+      targetRole.id === role.id || targetRole.name === role.name
+    );
+    return existsInTarget ? 'Existing' : 'New';
+  };
+
+  const getPolicyStatus = (policy: DirectusPolicy): 'Admin' | 'Existing' | 'New' => {
+    if (policy.admin_access) return 'Admin';
+    const existsInTarget = targetPolicies.some(targetPolicy => 
+      targetPolicy.id === policy.id || targetPolicy.name === policy.name
+    );
+    return existsInTarget ? 'Existing' : 'New';
+  };
+
   const loadSourceData = async () => {
     setLoading(true);
+    
     try {
-      const result = await fetchAccessControlData(sourceUrl, sourceToken);
+      const sourceClient = new DirectusClient(sourceUrl, sourceToken);
+      const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      if (result.success && result.roles && result.policies && result.permissions) {
-        setSourceRoles(result.roles);
-        setSourcePolicies(result.policies);
-        setSourcePermissions(result.permissions);
-        
-        const analysisResult = analyzeAccessControlData(result.roles, result.policies, result.permissions);
-        setAnalysis(analysisResult);
-        
-        onStatusUpdate({
-          type: 'success',
-          message: `Loaded ${result.roles.length} roles, ${result.policies.length} policies, ${result.permissions.length} permissions`
-        });
-      } else {
-        throw new Error(result.error || 'Failed to load access control data');
-      }
+      // Load source data
+      const [sourceRolesRes, sourcePoliciesRes, sourcePermissionsRes] = await Promise.all([
+        sourceClient.get('/roles'),
+        sourceClient.get('/policies'),
+        sourceClient.get('/permissions')
+      ]);
+
+      // Load target data for comparison
+      const [targetRolesRes, targetPoliciesRes] = await Promise.all([
+        targetClient.get('/roles').catch(() => ({ data: [] })), // Fallback if fails
+        targetClient.get('/policies').catch(() => ({ data: [] })) // Fallback if fails
+      ]);
+
+      const sourceRolesData = sourceRolesRes.data || [];
+      const sourcePoliciesData = sourcePoliciesRes.data || [];
+      const sourcePermissionsData = sourcePermissionsRes.data || [];
+      const targetRolesData = targetRolesRes.data || [];
+      const targetPoliciesData = targetPoliciesRes.data || [];
+
+      setSourceRoles(sourceRolesData);
+      setSourcePolicies(sourcePoliciesData);
+      setSourcePermissions(sourcePermissionsData);
+      setTargetRoles(targetRolesData);
+      setTargetPolicies(targetPoliciesData);
+
+      const analysisResult = analyzeAccessControlData(
+        sourceRolesData,
+        sourcePoliciesData,
+        sourcePermissionsData
+      );
+      setAnalysis(analysisResult);
+
+      onStatusUpdate({
+        type: 'success',
+        message: `Loaded ${sourceRolesData.length} roles, ${sourcePoliciesData.length} policies, ${sourcePermissionsData.length} permissions`
+      });
     } catch (error: any) {
       onStatusUpdate({
         type: 'error',
@@ -82,9 +127,85 @@ export function AccessControlManager({
     }
   };
 
+  const validateMigration = async () => {
+    setIsValidating(true);
+    setValidationResults(null);
+    
+    try {
+      // Filter selected roles and policies
+      const rolesToMigrate = sourceRoles.filter(role => selectedRoles.includes(role.id));
+      const policiesToMigrate = sourcePolicies.filter(policy => selectedPolicies.includes(policy.id));
+      const permissionsToMigrate = sourcePermissions.filter(permission => 
+        permission.policy && selectedPolicies.includes(permission.policy)
+      );
+
+      // Validation checks
+      const validation = {
+        roles: {
+          selected: rolesToMigrate.length,
+          adminRoles: rolesToMigrate.filter(r => r.admin_access).length,
+          customRoles: rolesToMigrate.filter(r => !r.admin_access).length,
+          issues: [] as string[]
+        },
+        policies: {
+          selected: policiesToMigrate.length,
+          adminPolicies: policiesToMigrate.filter(p => p.admin_access).length,
+          customPolicies: policiesToMigrate.filter(p => !p.admin_access).length,
+          issues: [] as string[]
+        },
+        permissions: {
+          selected: permissionsToMigrate.length,
+          orphaned: sourcePermissions.filter(p => !p.policy).length,
+          issues: [] as string[]
+        },
+        warnings: [] as string[],
+        canMigrate: true
+      };
+
+      // Check for issues
+      if (rolesToMigrate.length === 0 && policiesToMigrate.length === 0) {
+        validation.warnings.push('No roles or policies selected for migration');
+        validation.canMigrate = false;
+      }
+
+      if (validation.roles.adminRoles > 0 && !migrationOptions.roles?.skipAdminRoles) {
+        validation.warnings.push(`${validation.roles.adminRoles} admin roles selected - this may cause security issues`);
+      }
+
+      if (validation.policies.adminPolicies > 0 && !migrationOptions.policies?.skipAdminPolicies) {
+        validation.warnings.push(`${validation.policies.adminPolicies} admin policies selected - this may cause security issues`);
+      }
+
+      if (validation.permissions.orphaned > 0) {
+        validation.warnings.push(`${validation.permissions.orphaned} orphaned permissions found (no policy assigned)`);
+      }
+
+      // Note: Skip connectivity check during validation to avoid unnecessary API calls
+      // Connectivity will be tested during actual migration
+
+      setValidationResults(validation);
+      
+      onStatusUpdate({
+        type: validation.canMigrate ? (validation.warnings.length > 0 ? 'warning' : 'success') : 'error',
+        message: validation.canMigrate 
+          ? `Validation completed: ${rolesToMigrate.length} roles, ${policiesToMigrate.length} policies, ${permissionsToMigrate.length} permissions ready to migrate`
+          : 'Validation failed - please check issues before migration'
+      });
+
+    } catch (error: any) {
+      onStatusUpdate({
+        type: 'error',
+        message: `Validation error: ${error.message}`
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
   const executeMigration = async () => {
     setLoading(true);
-    setStep('migrate');
+    // Stay on selection step to show progress and results in main screen
+    // setStep('migrate'); // Commented out to keep in main screen
     
     try {
       // Filter selected roles and policies
@@ -106,7 +227,8 @@ export function AccessControlManager({
       );
       
       setMigrationResults(result);
-      setStep('results');
+      // Stay on selection step to show results in main screen
+      // setStep('results'); // Commented out to keep results in main screen
       
       onStatusUpdate({
         type: result.success ? 'success' : 'error',
@@ -167,7 +289,7 @@ export function AccessControlManager({
         {/* Step 1: Selection */}
         {step === 'selection' && (
           <div>
-            {loading ? (
+            {loading && !analysis ? (
               <div style={{ textAlign: 'center', padding: '2rem' }}>
                 <div>Loading access control data...</div>
               </div>
@@ -255,7 +377,7 @@ export function AccessControlManager({
                           fontSize: '0.75rem'
                         }}
                       >
-                        Existing ({sourceRoles.length})
+                        Existing ({sourceRoles.filter(r => getRoleStatus(r) === 'Existing').length})
                       </button>
                       <button
                         style={{
@@ -267,7 +389,7 @@ export function AccessControlManager({
                           fontSize: '0.75rem'
                         }}
                       >
-                        New (0)
+                        New ({sourceRoles.filter(r => getRoleStatus(r) === 'New').length})
                       </button>
                       <button
                         onClick={() => setSelectedRoles([])}
@@ -309,13 +431,13 @@ export function AccessControlManager({
                               </div>
                             </div>
                             <span style={{
-                              backgroundColor: role.admin_access ? '#dc2626' : '#f97316',
+                              backgroundColor: getRoleStatus(role) === 'Admin' ? '#dc2626' : getRoleStatus(role) === 'New' ? '#10b981' : '#f97316',
                               color: 'white',
                               padding: '0.25rem 0.5rem',
                               borderRadius: '12px',
                               fontSize: '0.75rem'
                             }}>
-                              {role.admin_access ? 'Admin' : 'Existing'}
+                              {getRoleStatus(role)}
                             </span>
                           </div>
                         </label>
@@ -355,7 +477,7 @@ export function AccessControlManager({
                           fontSize: '0.75rem'
                         }}
                       >
-                        Existing ({sourcePolicies.filter(p => p.admin_access).length})
+                        Existing ({sourcePolicies.filter(p => getPolicyStatus(p) === 'Existing').length})
                       </button>
                       <button
                         style={{
@@ -367,7 +489,7 @@ export function AccessControlManager({
                           fontSize: '0.75rem'
                         }}
                       >
-                        New ({sourcePolicies.filter(p => !p.admin_access).length})
+                        New ({sourcePolicies.filter(p => getPolicyStatus(p) === 'New').length})
                       </button>
                       <button
                         onClick={() => setSelectedPolicies([])}
@@ -413,13 +535,13 @@ export function AccessControlManager({
                                 </div>
                               </div>
                               <span style={{
-                                backgroundColor: policy.admin_access ? '#f97316' : '#10b981',
+                                backgroundColor: getPolicyStatus(policy) === 'Admin' ? '#dc2626' : getPolicyStatus(policy) === 'New' ? '#10b981' : '#f97316',
                                 color: 'white',
                                 padding: '0.25rem 0.5rem',
                                 borderRadius: '12px',
                                 fontSize: '0.75rem'
                               }}>
-                                {policy.admin_access ? 'Existing' : 'New'}
+                                {getPolicyStatus(policy)}
                               </span>
                             </div>
                           </label>
@@ -475,35 +597,197 @@ export function AccessControlManager({
                   </div>
                 </div>
                 
+                {/* Migration Results Summary */}
+                {migrationResults && (
+                  <div style={{ 
+                    backgroundColor: '#f8fafc', 
+                    padding: '1.5rem', 
+                    borderRadius: '8px', 
+                    marginBottom: '1.5rem',
+                    border: '1px solid #e2e8f0'
+                  }}>
+                    <h4 style={{ margin: '0 0 1rem 0', color: '#1e293b', display: 'flex', alignItems: 'center' }}>
+                      📊 Migration Results
+                    </h4>
+                    
+                    {/* Success Message */}
+                    <div style={{ 
+                      padding: '1rem', 
+                      backgroundColor: migrationResults.success ? '#d1fae5' : '#fee2e2',
+                      color: migrationResults.success ? '#065f46' : '#dc2626',
+                      borderRadius: '6px',
+                      marginBottom: '1rem',
+                      fontSize: '0.875rem',
+                      fontWeight: '500'
+                    }}>
+                      {migrationResults.message}
+                    </div>
+
+                    {/* Detailed Results */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {migrationResults.importedRoles && (
+                        <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem' }}>
+                          <span style={{ marginRight: '0.5rem' }}>👥</span>
+                          <strong>Roles:</strong>
+                          <span style={{ marginLeft: '0.5rem', color: '#059669' }}>
+                            {migrationResults.importedRoles.filter((r: any) => r.status === 'success').length}/{migrationResults.importedRoles.length} successful
+                          </span>
+                        </div>
+                      )}
+                      
+                      {migrationResults.importedPolicies && (
+                        <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem' }}>
+                          <span style={{ marginRight: '0.5rem' }}>🔐</span>
+                          <strong>Policies:</strong>
+                          <span style={{ marginLeft: '0.5rem', color: '#059669' }}>
+                            {migrationResults.importedPolicies.filter((p: any) => p.status === 'success').length}/{migrationResults.importedPolicies.length} successful
+                          </span>
+                        </div>
+                      )}
+                      
+                      {migrationResults.importedPermissions && (
+                        <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.875rem' }}>
+                          <span style={{ marginRight: '0.5rem' }}>🔑</span>
+                          <strong>Permissions:</strong>
+                          <span style={{ marginLeft: '0.5rem', color: '#059669' }}>
+                            {migrationResults.importedPermissions.filter((p: any) => p.status === 'success').length}/{migrationResults.importedPermissions.length} successful
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Clear Results Button */}
+                    <div style={{ textAlign: 'right', marginTop: '1rem' }}>
+                      <button
+                        onClick={() => {
+                          setMigrationResults(null);
+                          setValidationResults(null);
+                        }}
+                        style={{
+                          backgroundColor: '#6b7280',
+                          color: 'white',
+                          padding: '0.5rem 1rem',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '0.75rem'
+                        }}
+                      >
+                        Clear Results
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Validation Results */}
+                {validationResults && (
+                  <div style={{ 
+                    backgroundColor: validationResults.canMigrate ? '#f0f9ff' : '#fef2f2', 
+                    padding: '1.5rem', 
+                    borderRadius: '8px', 
+                    marginBottom: '1.5rem',
+                    border: `1px solid ${validationResults.canMigrate ? '#0ea5e9' : '#f87171'}`
+                  }}>
+                    <h4 style={{ margin: '0 0 1rem 0', color: validationResults.canMigrate ? '#0369a1' : '#dc2626' }}>
+                      🔍 Validation Results
+                    </h4>
+                    
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Roles: {validationResults.roles.selected}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Admin: {validationResults.roles.adminRoles} | Custom: {validationResults.roles.customRoles}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Policies: {validationResults.policies.selected}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Admin: {validationResults.policies.adminPolicies} | Custom: {validationResults.policies.customPolicies}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Permissions: {validationResults.permissions.selected}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Orphaned: {validationResults.permissions.orphaned}</div>
+                      </div>
+                    </div>
+
+                    {validationResults.warnings.length > 0 && (
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem', marginBottom: '0.5rem', color: '#f59e0b' }}>⚠️ Warnings:</div>
+                        {validationResults.warnings.map((warning: string, index: number) => (
+                          <div key={index} style={{ fontSize: '0.75rem', color: '#92400e', marginBottom: '0.25rem' }}>
+                            • {warning}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{ 
+                      marginTop: '1rem', 
+                      padding: '0.75rem', 
+                      backgroundColor: validationResults.canMigrate ? '#dcfce7' : '#fee2e2',
+                      borderRadius: '4px',
+                      fontSize: '0.875rem',
+                      fontWeight: '500',
+                      color: validationResults.canMigrate ? '#166534' : '#dc2626'
+                    }}>
+                      {validationResults.canMigrate ? '✅ Ready to migrate' : '❌ Migration blocked - resolve issues first'}
+                    </div>
+                  </div>
+                )}
+
+                {/* Migration Progress Indicator */}
+                {loading && (
+                  <div style={{ 
+                    backgroundColor: '#fef3c7', 
+                    padding: '1.5rem', 
+                    borderRadius: '8px', 
+                    marginBottom: '1.5rem',
+                    border: '1px solid #f59e0b',
+                    textAlign: 'center'
+                  }}>
+                    <h4 style={{ margin: '0 0 1rem 0', color: '#92400e' }}>
+                      🚀 Migration in Progress...
+                    </h4>
+                    <div style={{ fontSize: '1.2rem', marginBottom: '1rem', color: '#92400e' }}>
+                      Please wait while we migrate your access control data.
+                    </div>
+                    <div style={{ fontSize: '0.875rem', color: '#78350f' }}>
+                      This may take a few minutes depending on the amount of data.
+                    </div>
+                  </div>
+                )}
+
                 {/* Action Buttons */}
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
                   <button
                     onClick={loadSourceData}
+                    disabled={loading}
                     style={{
                       backgroundColor: '#6b7280',
                       color: 'white',
                       padding: '0.75rem 1.5rem',
                       border: 'none',
                       borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '0.875rem'
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: loading ? 0.6 : 1
                     }}
                   >
                     Refresh Data
                   </button>
                   
                   <button
+                    onClick={validateMigration}
+                    disabled={loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0)}
                     style={{
                       backgroundColor: '#f59e0b',
                       color: 'white',
                       padding: '0.75rem 1.5rem',
                       border: 'none',
                       borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '0.875rem'
+                      cursor: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0) ? 0.6 : 1
                     }}
                   >
-                    Validate Migration
+                    {isValidating ? 'Validating...' : 'Validate Migration'}
                   </button>
                   
                   <button
@@ -597,6 +881,7 @@ export function AccessControlManager({
                   setMigrationResults(null);
                   setSelectedRoles([]);
                   setSelectedPolicies([]);
+                  setValidationResults(null);
                 }}
                 style={{
                   backgroundColor: '#7c3aed',
