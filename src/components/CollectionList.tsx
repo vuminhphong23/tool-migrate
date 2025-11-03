@@ -1,8 +1,11 @@
 import React, { useState } from 'react'
-import { importFromDirectus } from '../lib/apiHandlers'
+import { importFromDirectus, previewCollectionItems, importSelectedItems, getRelations } from '../lib/apiHandlers'
 import { FlowsManager } from './FlowsManager'
 import { AccessControlManager } from './AccessControlManager'
 import { DocumentationTab } from './DocumentationTab'
+import { ItemSelectorModal } from './ItemSelectorModal'
+import { MigrationOrderManager } from './MigrationOrderManager'
+import { FilesManager } from './FilesManager'
 import type { Collection, OperationStatus } from '../types'
 
 interface CollectionListProps {
@@ -30,6 +33,7 @@ export function CollectionList({
   const [titleFilter, setTitleFilter] = useState<string>('')
   const [showFlowsManager, setShowFlowsManager] = useState(false)
   const [showAccessControlManager, setShowAccessControlManager] = useState(false)
+  const [showFilesManager, setShowFilesManager] = useState(false)
   const [showDocumentation, setShowDocumentation] = useState(false)
   const [selectedCollections, setSelectedCollections] = useState<string[]>([])
   const [validationResults, setValidationResults] = useState<Record<string, { isValid: boolean; errors: string[]; warnings: string[] }>>({})
@@ -50,6 +54,25 @@ export function CollectionList({
   const [importProgress, setImportProgress] = useState<Record<string, { current: number; total: number }>>({})
   const [selectedSchemaCollections, setSelectedSchemaCollections] = useState<string[]>([])
   const [schemaCollectionFilter, setSchemaCollectionFilter] = useState<string>('')
+  
+  // Item Selector states
+  const [showItemSelector, setShowItemSelector] = useState(false)
+  const [currentPreviewCollection, setCurrentPreviewCollection] = useState<string>('')
+  const [previewItems, setPreviewItems] = useState<any[]>([])
+  const [previewTotal, setPreviewTotal] = useState<number>(0)
+  const [previewOffset, setPreviewOffset] = useState<number>(0)
+  const [selectedItemIds, setSelectedItemIds] = useState<(string | number)[]>([])
+  const [loadingPreview, setLoadingPreview] = useState(false)
+  
+  // Migration Order Manager states
+  const [showMigrationOrderManager, setShowMigrationOrderManager] = useState(false)
+  const [relations, setRelations] = useState<any[]>([])
+  const [loadingRelations, setLoadingRelations] = useState(false)
+  const [batchMigrationProgress, setBatchMigrationProgress] = useState<{
+    current: number;
+    total: number;
+    currentCollection: string;
+  } | null>(null)
   // Load target collections for comparison
   const loadTargetCollections = async () => {
     try {
@@ -62,6 +85,22 @@ export function CollectionList({
       // Silent fail
     }
   };
+
+  // Auto-load relations on mount for dependency notes
+  React.useEffect(() => {
+    const loadRelations = async () => {
+      try {
+        const result = await getRelations(sourceUrl, sourceToken)
+        if (result.success) {
+          setRelations(result.relations || [])
+        }
+      } catch (error) {
+        // Silent fail - dependency notes just won't show
+      }
+    }
+    
+    loadRelations()
+  }, [sourceUrl, sourceToken])
 
 
   // Helper function to check if collection exists in target
@@ -1003,6 +1042,245 @@ export function CollectionList({
     setErrorLogs(prev => [errorLog, ...prev].slice(0, 50)); // Keep last 50 errors
   };
 
+  // Preview items before importing - Load ALL items at once
+  const handlePreviewItems = async (collectionName: string) => {
+    setCurrentPreviewCollection(collectionName)
+    setPreviewItems([])
+    setPreviewTotal(0)
+    setPreviewOffset(0)
+    setSelectedItemIds([])
+    setLoadingPreview(true)
+    setShowItemSelector(true)
+
+    try {
+      // Load ALL items (limit: -1 means no limit in Directus)
+      const result = await previewCollectionItems(
+        sourceUrl,
+        sourceToken,
+        collectionName,
+        { limit: -1, offset: 0 }
+      )
+
+      if (result.success) {
+        setPreviewItems(result.items || [])
+        setPreviewTotal(result.total || 0)
+        onStatusUpdate({
+          type: 'success',
+          message: `Loaded ${result.items?.length || 0} items from ${collectionName}`
+        })
+      } else {
+        onStatusUpdate({
+          type: 'error',
+          message: `Failed to preview items: ${result.error?.message || 'Unknown error'}`
+        })
+        setShowItemSelector(false)
+      }
+    } catch (error: any) {
+      onStatusUpdate({
+        type: 'error',
+        message: `Preview failed: ${error.message}`
+      })
+      setShowItemSelector(false)
+    } finally {
+      setLoadingPreview(false)
+    }
+  }
+
+  // Load more is no longer needed - we load all items at once
+
+  // Fetch relations from source
+  const handleOpenMigrationOrderManager = async () => {
+    setLoadingRelations(true)
+    
+    try {
+      const result = await getRelations(sourceUrl, sourceToken)
+      
+      if (result.success) {
+        setRelations(result.relations || [])
+        setShowMigrationOrderManager(true)
+        onStatusUpdate({
+          type: 'success',
+          message: `Loaded ${result.relations?.length || 0} relationships`
+        })
+      } else {
+        onStatusUpdate({
+          type: 'error',
+          message: `Failed to load relationships: ${result.error?.message || 'Unknown error'}`
+        })
+      }
+    } catch (error: any) {
+      onStatusUpdate({
+        type: 'error',
+        message: `Failed to load relationships: ${error.message}`
+      })
+    } finally {
+      setLoadingRelations(false)
+    }
+  }
+
+  // Get dependency info for a collection
+  const getCollectionDependencies = (collectionName: string): string[] => {
+    if (!relations || relations.length === 0) return []
+    
+    const dependencies: string[] = []
+    
+    relations.forEach((relation: any) => {
+      // If this collection has a foreign key to another collection
+      if (relation.collection === collectionName && relation.related_collection) {
+        // Skip self-references
+        if (relation.related_collection !== collectionName) {
+          if (!dependencies.includes(relation.related_collection)) {
+            dependencies.push(relation.related_collection)
+          }
+        }
+      }
+    })
+    
+    return dependencies
+  }
+
+  // Batch migrate collections in order
+  const handleBatchMigration = async (orderedCollections: string[]) => {
+    setShowMigrationOrderManager(false)
+    setBatchMigrationProgress({ current: 0, total: orderedCollections.length, currentCollection: '' })
+
+    let successCount = 0
+    let failedCount = 0
+    const results: Array<{ collection: string; success: boolean; message: string }> = []
+
+    for (let i = 0; i < orderedCollections.length; i++) {
+      const collectionName = orderedCollections[i]
+      setBatchMigrationProgress({ 
+        current: i + 1, 
+        total: orderedCollections.length, 
+        currentCollection: collectionName 
+      })
+
+      try {
+        const result = await importFromDirectus(
+          sourceUrl,
+          sourceToken,
+          targetUrl,
+          targetToken,
+          collectionName,
+          {
+            onProgress: () => {} // Don't update individual progress during batch
+          }
+        )
+
+        if (result.success) {
+          successCount++
+          const importedItems = result.importedItems || []
+          const created = importedItems.filter(item => item.action === 'created').length
+          const updated = importedItems.filter(item => item.action === 'updated').length
+          const failed = importedItems.filter(item => item.status === 'error').length
+          
+          results.push({
+            collection: collectionName,
+            success: true,
+            message: `${created} created, ${updated} updated, ${failed} failed`
+          })
+        } else {
+          failedCount++
+          results.push({
+            collection: collectionName,
+            success: false,
+            message: result.message || 'Unknown error'
+          })
+        }
+      } catch (error: any) {
+        failedCount++
+        results.push({
+          collection: collectionName,
+          success: false,
+          message: error.message
+        })
+      }
+
+      // Small delay between collections
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+
+    setBatchMigrationProgress(null)
+
+    // Show summary
+    const summaryMessage = `Batch migration complete!\n✅ ${successCount} succeeded\n❌ ${failedCount} failed\n\nDetails:\n${results.map(r => `${r.success ? '✅' : '❌'} ${r.collection}: ${r.message}`).join('\n')}`
+    
+    onStatusUpdate({
+      type: failedCount > 0 ? 'warning' : 'success',
+      message: `Batch migration: ${successCount} succeeded, ${failedCount} failed`
+    })
+
+    alert(summaryMessage)
+  }
+
+  // Import selected items
+  const handleImportSelected = async (selectedFields?: string[]) => {
+    if (selectedItemIds.length === 0) return
+
+    const collectionName = currentPreviewCollection
+    const loadingKey = `import_selected_${collectionName}`
+    setLoading(loadingKey, true)
+    setShowItemSelector(false)
+    onStatusUpdate(null)
+    setImportProgress(prev => ({ ...prev, [collectionName]: { current: 0, total: selectedItemIds.length } }))
+
+    try {
+      const result = await importSelectedItems(
+        sourceUrl,
+        sourceToken,
+        targetUrl,
+        targetToken,
+        collectionName,
+        selectedItemIds,
+        {
+          selectedFields: selectedFields,  // Pass selected fields
+          onProgress: (current: number, total: number) => {
+            setImportProgress(prev => ({ ...prev, [collectionName]: { current, total } }))
+          }
+        }
+      )
+
+      if (result.success) {
+        const importedItems = result.importedItems || []
+        const successful = importedItems.filter(item => item.status !== 'error').length
+        const failed = importedItems.filter(item => item.status === 'error').length
+        const created = importedItems.filter(item => item.action === 'created').length
+        const updated = importedItems.filter(item => item.action === 'updated').length
+
+        onStatusUpdate({
+          type: failed > 0 ? 'warning' : 'success',
+          message: `Import complete for ${collectionName}: ${created} created, ${updated} updated, ${failed} failed`
+        })
+
+        if (failed > 0) {
+          const failedItems = importedItems.filter(item => item.status === 'error')
+          console.log(`Failed items for ${collectionName}:`, failedItems)
+        }
+      } else {
+        onStatusUpdate({
+          type: 'error',
+          message: result.message || `Failed to import selected items from ${collectionName}`
+        })
+      }
+    } catch (error: any) {
+      onStatusUpdate({
+        type: 'error',
+        message: `Import failed: ${error.message}`
+      })
+      logError(`import_selected_${collectionName}`, error);
+    } finally {
+      setLoading(loadingKey, false)
+      setTimeout(() => {
+        setImportProgress(prev => {
+          const newProgress = { ...prev };
+          delete newProgress[collectionName];
+          return newProgress;
+        });
+      }, 1000);
+    }
+  }
+
   const handleImport = async (collectionName: string) => {
     const loadingKey = `import_${collectionName}`
     setLoading(loadingKey, true)
@@ -1029,14 +1307,17 @@ export function CollectionList({
         const importedItems = result.importedItems || []
         const successful = importedItems.filter(item => item.status !== 'error').length
         const failed = importedItems.filter(item => item.status === 'error').length
+        const created = importedItems.filter(item => item.action === 'created').length
+        const updated = importedItems.filter(item => item.action === 'updated').length
 
         onStatusUpdate({
           type: failed > 0 ? 'warning' : 'success',
-          message: `Successfully imported ${successful} items from ${collectionName} (${failed} failed)`
+          message: `Import complete for ${collectionName}: ${created} created, ${updated} updated, ${failed} failed`
         })
 
         if (failed > 0) {
           const failedItems = importedItems.filter(item => item.status === 'error')
+          console.log(`Failed items for ${collectionName}:`, failedItems)
         }
       } else {
         onStatusUpdate({
@@ -1701,6 +1982,30 @@ export function CollectionList({
           >
             🔐 Access Control Migration
           </button>
+
+          <button
+            onClick={() => setShowFilesManager(true)}
+            style={{
+              flex: 1,
+              backgroundColor: '#0891b2',
+              color: 'white',
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: Object.values(loading).some(Boolean) ? 'not-allowed' : 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: '500',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem',
+              opacity: Object.values(loading).some(Boolean) ? 0.6 : 1,
+              transition: 'all 0.2s ease'
+            }}
+            disabled={Object.values(loading).some(Boolean)}
+          >
+            📁 Migrate Files
+          </button>
         </div>
       </div>
 
@@ -1731,44 +2036,46 @@ export function CollectionList({
         </div>
         
         {showImportOptions && (
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="importLimit">Import Limit:</label>
-              <input
-                id="importLimit"
-                type="number"
-                min="1"
-                value={importLimit || ''}
-                onChange={(e) => setImportLimit(e.target.value ? Number(e.target.value) : null)}
-                placeholder="Max items to import (optional)"
-              />
-            </div>
+          <div>
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="importLimit">Import Limit:</label>
+                <input
+                  id="importLimit"
+                  type="number"
+                  min="1"
+                  value={importLimit || ''}
+                  onChange={(e) => setImportLimit(e.target.value ? Number(e.target.value) : null)}
+                  placeholder="Max items to import (optional)"
+                />
+              </div>
 
-            {/* Title Filter - Disabled due to schema compatibility issues
-            <div className="form-group">
-              <label htmlFor="titleFilter">Title Filter:</label>
-              <input
-                id="titleFilter"
-                type="text"
-                value={titleFilter}
-                onChange={(e) => setTitleFilter(e.target.value)}
-                placeholder="Filter by title (optional)"
-              />
-            </div>
-            */}
+              {/* Title Filter - Disabled due to schema compatibility issues
+              <div className="form-group">
+                <label htmlFor="titleFilter">Title Filter:</label>
+                <input
+                  id="titleFilter"
+                  type="text"
+                  value={titleFilter}
+                  onChange={(e) => setTitleFilter(e.target.value)}
+                  placeholder="Filter by title (optional)"
+                />
+              </div>
+              */}
 
-            <div className="form-group">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setImportLimit(null)
-                  setTitleFilter('')
-                }}
-                style={{ backgroundColor: '#6b7280' }}
-              >
-                Clear Filters
-              </button>
+              <div className="form-group">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setImportLimit(null)
+                    setTitleFilter('')
+                  }}
+                  style={{ backgroundColor: '#6b7280' }}
+                >
+                  Clear Filters
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1788,6 +2095,24 @@ export function CollectionList({
 
       {/* Main Action Buttons */}
       <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginBottom: '1.5rem' }}>
+        <button
+          onClick={handleOpenMigrationOrderManager}
+          style={{
+            backgroundColor: '#8b5cf6',
+            color: 'white',
+            padding: '0.75rem 1.5rem',
+            fontWeight: '600',
+            borderRadius: '6px',
+            border: 'none',
+            cursor: 'pointer',
+            minWidth: '200px',
+            boxShadow: '0 2px 4px rgba(139, 92, 246, 0.3)'
+          }}
+          disabled={Object.values(loading).some(Boolean) || batchMigrationProgress !== null || loadingRelations}
+        >
+          {loadingRelations ? 'Loading...' : '🔄 Batch Migrate by Order'}
+        </button>
+
         <button
           onClick={async () => {
             setLoading('refresh_collections', true);
@@ -2102,14 +2427,65 @@ export function CollectionList({
                       justifyContent: 'space-between',
                       marginBottom: '0.25rem'
                     }}>
-                      <h4 style={{ 
-                        margin: 0, 
-                        fontSize: '1rem', 
-                        fontWeight: '600',
-                        color: '#1f2937'
-                      }}>
-                        {collection.collection}
-                      </h4>
+                      <div>
+                        <h4 style={{ 
+                          margin: 0, 
+                          fontSize: '1rem', 
+                          fontWeight: '600',
+                          color: '#1f2937'
+                        }}>
+                          {collection.collection}
+                        </h4>
+                        
+                        {/* Dependency Note */}
+                        {(() => {
+                          const deps = getCollectionDependencies(collection.collection)
+                          
+                          // Also check reverse: what depends on this collection
+                          const dependedBy: string[] = []
+                          relations.forEach((relation: any) => {
+                            if (relation.related_collection === collection.collection && 
+                                relation.collection !== collection.collection) {
+                              if (!dependedBy.includes(relation.collection)) {
+                                dependedBy.push(relation.collection)
+                              }
+                            }
+                          })
+                          
+                          if (deps.length > 0 || dependedBy.length > 0) {
+                            return (
+                              <div style={{ marginTop: '0.25rem' }}>
+                                {deps.length > 0 && (
+                                  <div style={{
+                                    padding: '0.375rem 0.5rem',
+                                    backgroundColor: '#eff6ff',
+                                    borderLeft: '3px solid #3b82f6',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    color: '#1e40af',
+                                    marginBottom: dependedBy.length > 0 ? '0.25rem' : 0
+                                  }}>
+                                    <strong>⚠️ Migrate first:</strong> {deps.join(', ')}
+                                  </div>
+                                )}
+                                {dependedBy.length > 0 && (
+                                  <div style={{
+                                    padding: '0.375rem 0.5rem',
+                                    backgroundColor: '#f0fdf4',
+                                    borderLeft: '3px solid #22c55e',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    color: '#15803d'
+                                  }}>
+                                    <strong>✅ Required by:</strong> {dependedBy.join(', ')}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          }
+                          return null
+                        })()}
+                      </div>
                       
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         {/* Target Status Badge */}
@@ -2254,23 +2630,42 @@ export function CollectionList({
                         </div>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => handleImport(collection.collection)}
-                        disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
-                        style={{
-                          backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#f97316',
-                          color: 'white',
-                          padding: '0.5rem 1rem',
-                          borderRadius: '6px',
-                          border: 'none',
-                          cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
-                          fontWeight: '500',
-                          opacity: loading[`import_${collection.collection}`] ? 0.7 : 1
-                        }}
-                        title={collectionStatus === 'new' ? 'Cannot import to new collections. Please sync schema first.' : ''}
-                      >
-                        {collectionStatus === 'new' ? 'Schema Required' : 'Import from Source'}
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          onClick={() => handlePreviewItems(collection.collection)}
+                          disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
+                          style={{
+                            backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#3b82f6',
+                            color: 'white',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '6px',
+                            border: 'none',
+                            cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
+                            fontWeight: '500',
+                            fontSize: '0.875rem'
+                          }}
+                          title="Preview and select specific items to import"
+                        >
+                          📋 Select Items
+                        </button>
+                        <button
+                          onClick={() => handleImport(collection.collection)}
+                          disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
+                          style={{
+                            backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#f97316',
+                            color: 'white',
+                            padding: '0.5rem 1rem',
+                            borderRadius: '6px',
+                            border: 'none',
+                            cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
+                            fontWeight: '500',
+                            opacity: loading[`import_${collection.collection}`] ? 0.7 : 1
+                          }}
+                          title={collectionStatus === 'new' ? 'Cannot import to new collections. Please sync schema first.' : 'Import all items from source'}
+                        >
+                          {collectionStatus === 'new' ? 'Schema Required' : 'Import All'}
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2849,6 +3244,17 @@ export function CollectionList({
         })}
       />
 
+      {/* Files Manager Modal */}
+      {showFilesManager && (
+        <FilesManager
+          sourceUrl={sourceUrl}
+          sourceToken={sourceToken}
+          targetUrl={targetUrl}
+          targetToken={targetToken}
+          onClose={() => setShowFilesManager(false)}
+          onStatusUpdate={onStatusUpdate}
+        />
+      )}
 
       {/* Error Logs Modal */}
       {showErrorLogs && (
@@ -2982,6 +3388,85 @@ export function CollectionList({
         isVisible={showDocumentation}
         onClose={() => setShowDocumentation(false)} 
       />
+
+      {/* Item Selector Modal */}
+      {showItemSelector && (
+        <ItemSelectorModal
+          collectionName={currentPreviewCollection}
+          items={previewItems}
+          total={previewTotal}
+          selectedIds={selectedItemIds}
+          onSelectionChange={setSelectedItemIds}
+          onClose={() => setShowItemSelector(false)}
+          onImport={handleImportSelected}
+          onLoadMore={() => {}} // No longer needed - all items loaded at once
+          hasMore={false} // Always false since we load all items
+          loading={loadingPreview}
+          relations={relations} // Pass relations for dependency notes
+        />
+      )}
+
+      {/* Migration Order Manager Modal */}
+      {showMigrationOrderManager && (
+        <MigrationOrderManager
+          collections={collections}
+          relations={relations}
+          onClose={() => setShowMigrationOrderManager(false)}
+          onStartMigration={handleBatchMigration}
+        />
+      )}
+
+      {/* Batch Migration Progress Overlay */}
+      {batchMigrationProgress && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 2000
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '12px',
+            padding: '2rem',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+          }}>
+            <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.25rem', fontWeight: '600', color: '#111827' }}>
+              🔄 Batch Migration in Progress
+            </h3>
+            <div style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
+              Migrating {batchMigrationProgress.current} of {batchMigrationProgress.total} collections
+            </div>
+            <div style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: '500', color: '#3b82f6' }}>
+              Current: {batchMigrationProgress.currentCollection}
+            </div>
+            <div style={{
+              width: '100%',
+              height: '8px',
+              backgroundColor: '#e5e7eb',
+              borderRadius: '9999px',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                width: `${(batchMigrationProgress.current / batchMigrationProgress.total) * 100}%`,
+                height: '100%',
+                backgroundColor: '#3b82f6',
+                transition: 'width 0.3s ease'
+              }}></div>
+            </div>
+            <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#9ca3af', textAlign: 'center' }}>
+              Please wait... Do not close this window
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { createDirectus, readItems, rest, staticToken } from "@directus/sdk";
+import { createDirectus, readItems, rest, staticToken, readRelations } from "@directus/sdk";
 import { DirectusClient } from "./DirectusClient";
 import type { ImportLogEntry } from "../types";
 
@@ -287,6 +287,8 @@ export async function importFromDirectus(
     limit?: number;
     titleFilter?: string;
     onProgress?: (current: number, total: number) => void;
+    selectedFields?: string[]; // Only migrate selected fields
+    forceUpdate?: boolean; // Force update even if item exists
   }
 ): Promise<ImportResult> {
   const importLog: ImportLogEntry[] = [];
@@ -435,40 +437,99 @@ export async function importFromDirectus(
       }
       
       try {
-        // Remove system fields that shouldn't be imported
+        // Remove system fields
         const { id, date_created, date_updated, user_created, user_updated, ...cleanItem } = item;
 
-        // Try to create first (most common case for migration), then update if exists
+        // Prepare item to import
+        let itemToImport: Record<string, any> = {};
+        
+        if (options?.selectedFields && options.selectedFields.length > 0) {
+          // Only migrate selected fields - user has full control
+          options.selectedFields.forEach(field => {
+            if (field in cleanItem) {
+              itemToImport[field] = cleanItem[field];
+            }
+          });
+        } else {
+          // Migrate all fields (user didn't select specific fields)
+          itemToImport = { ...cleanItem };
+        }
+
         let importResponse: any | null = null;
         let action: "created" | "updated" = "created";
-
         const sourceIdStr = String(id);
 
+        // Step 1: Check if item already exists in target
+        let itemExists = false;
         try {
-          // Try to create with explicit ID first (upsert mode)
-          logStep("item_create_with_explicit_id_start", { sourceId: sourceIdStr, collectionName });
-          const payloadWithId = { id: sourceIdStr, ...cleanItem };
-          importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
-          action = "created";
-        } catch (createErr: any) {
-          // If create fails (item might already exist), try to update
+          const checkResponse = await targetClient.get(`/items/${collectionName}/${sourceIdStr}`);
+          itemExists = !!checkResponse?.data;
+          logStep("item_exists_check", { 
+            sourceId: sourceIdStr, 
+            collectionName, 
+            exists: itemExists 
+          });
+        } catch (checkErr: any) {
+          // Item doesn't exist (404) or other error
+          itemExists = false;
+        }
+
+        // Step 2: Update or Create based on existence
+        if (itemExists) {
+          // Item exists - UPDATE it
           try {
-            logStep("item_update_by_id_start", { sourceId: sourceIdStr, collectionName, reason: "create_failed" });
+            logStep("item_update_start", { sourceId: sourceIdStr, collectionName });
             importResponse = await targetClient.patch(
               `/items/${collectionName}/${sourceIdStr}`,
-              cleanItem,
+              itemToImport,
             );
             action = "updated";
           } catch (updateErr: any) {
-            // If both fail, try plain create without ID
-            logStep("item_create_without_id_fallback", { 
+            // Update failed - log detailed error
+            logStep("item_update_failed", { 
               sourceId: sourceIdStr, 
-              collectionName, 
-              createError: createErr?.message,
-              updateError: updateErr?.message
+              collectionName,
+              error: updateErr?.message,
+              status: updateErr?.response?.status,
+              details: updateErr?.response?.data
             });
-            importResponse = await targetClient.post(`/items/${collectionName}`, cleanItem);
+            throw updateErr;
+          }
+        } else {
+          // Item doesn't exist - CREATE it
+          try {
+            logStep("item_create_with_id_start", { sourceId: sourceIdStr, collectionName });
+            const payloadWithId = { id: sourceIdStr, ...itemToImport };
+            importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
             action = "created";
+          } catch (createErr: any) {
+            // Create failed - log detailed error
+            logStep("item_create_failed", { 
+              sourceId: sourceIdStr, 
+              collectionName,
+              error: createErr?.message,
+              status: createErr?.response?.status,
+              details: createErr?.response?.data
+            });
+            
+            // Only log 403 errors to console (permission issues)
+            if (createErr?.response?.status === 403) {
+              console.error(`\n❌ 403 FORBIDDEN - Cannot create ${collectionName} item ${sourceIdStr}`);
+              console.error(`📋 Full error response:`, JSON.stringify(createErr?.response?.data, null, 2));
+              console.error(`🔗 Request URL:`, createErr?.config?.url);
+              console.error(`📦 Payload:`, JSON.stringify(itemToImport, null, 2));
+              
+              const errorMsg = createErr?.response?.data?.errors?.[0];
+              if (errorMsg?.extensions?.collection) {
+                console.error(`\n💡 Missing READ permission on: "${errorMsg.extensions.collection}"`);
+              } else if (errorMsg?.message) {
+                console.error(`\n💡 Error: ${errorMsg.message}`);
+              }
+              
+              console.error(`\n🔍 Check: Flows, Hooks, or Database permissions\n`);
+            }
+            
+            throw createErr;
           }
         }
 
@@ -517,6 +578,239 @@ export async function importFromDirectus(
     return {
       success: true,
       message: `Successfully imported ${successCount} items from ${collectionName} (${errorCount} failed)`,
+      importedItems,
+      importLog,
+    };
+  } catch (error: any) {
+    logStep("fatal_error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return {
+      success: false,
+      message: `Import failed: ${error.message}`,
+      error: {
+        message: error.message,
+        status: error.response?.status,
+        details: error.response?.data,
+      },
+      importLog,
+    };
+  }
+}
+
+/**
+ * Preview items from a collection before importing
+ */
+export async function previewCollectionItems(
+  sourceUrl: string,
+  sourceToken: string,
+  collectionName: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{
+  success: boolean;
+  items?: any[];
+  total?: number;
+  error?: any;
+}> {
+  try {
+    const normalizedToken = sourceToken.replace(/^Bearer\s+/i, "");
+    const sourceDirectus = createDirectus(sourceUrl)
+      .with(staticToken(normalizedToken))
+      .with(rest());
+
+    // Use provided limit or default to 100
+    // limit: -1 means fetch all items (no limit)
+    const limit = options?.limit !== undefined ? options.limit : 100;
+    const offset = options?.offset || 0;
+
+    const response: any = await sourceDirectus.request(
+      (readItems as any)(collectionName, { 
+        limit, 
+        offset,
+        meta: 'total_count'
+      }),
+    );
+
+    // Handle both array response and object with data property
+    const items = Array.isArray(response) ? response : (response?.data || []);
+    const total = response?.meta?.total_count || items.length;
+
+    return {
+      success: true,
+      items,
+      total,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: {
+        message: error.message,
+        status: error.response?.status,
+        details: error.response?.data,
+      },
+    };
+  }
+}
+
+/**
+ * Import only selected items by their IDs
+ */
+export async function importSelectedItems(
+  sourceUrl: string,
+  sourceToken: string,
+  targetUrl: string,
+  targetToken: string,
+  collectionName: string,
+  selectedIds: (string | number)[],
+  options?: {
+    selectedFields?: string[];  // Only migrate selected fields
+    onProgress?: (current: number, total: number) => void;
+  }
+): Promise<ImportResult> {
+  const importLog: ImportLogEntry[] = [];
+
+  const logStep = (step: string, details: Record<string, unknown>) => {
+    const logEntry: ImportLogEntry = {
+      timestamp: new Date().toISOString(),
+      step,
+      details,
+    };
+    importLog.push(logEntry);
+  };
+
+  try {
+    logStep("import_selected_start", {
+      sourceUrl,
+      targetUrl,
+      collectionName,
+      selectedCount: selectedIds.length,
+    });
+
+    // Create clients
+    const normalizedSourceToken = sourceToken.replace(/^Bearer\s+/i, "");
+    const sourceDirectus = createDirectus(sourceUrl)
+      .with(staticToken(normalizedSourceToken))
+      .with(rest());
+
+    const targetClient = new DirectusClient(targetUrl, targetToken);
+
+    // Fetch selected items from source
+    const sourceItems: any[] = [];
+    for (const id of selectedIds) {
+      try {
+        const item: any = await sourceDirectus.request(
+          (readItems as any)(collectionName, { 
+            filter: { id: { _eq: id } },
+            limit: 1 
+          }),
+        );
+        const itemData = Array.isArray(item) ? item[0] : item?.data?.[0];
+        if (itemData) {
+          sourceItems.push(itemData);
+        }
+      } catch (err: any) {
+        logStep("fetch_item_failed", { id, error: err.message });
+      }
+    }
+
+    logStep("fetch_selected_complete", {
+      requested: selectedIds.length,
+      fetched: sourceItems.length,
+    });
+
+    // Import items
+    const importedItems: ImportedItem[] = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < sourceItems.length; i++) {
+      const item = sourceItems[i];
+      
+      if (options?.onProgress) {
+        options.onProgress(i + 1, sourceItems.length);
+      }
+      
+      try {
+        const { id, date_created, date_updated, user_created, user_updated, ...cleanItem } = item;
+
+        // Prepare item to import
+        let itemToImport: Record<string, any> = {};
+        
+        if (options?.selectedFields && options.selectedFields.length > 0) {
+          // Only migrate selected fields - user has full control
+          options.selectedFields.forEach(field => {
+            if (field in cleanItem) {
+              itemToImport[field] = cleanItem[field];
+            }
+          });
+        } else {
+          // Migrate all fields (user didn't select specific fields)
+          itemToImport = { ...cleanItem };
+        }
+
+        let importResponse: any | null = null;
+        let action: "created" | "updated" = "created";
+        const sourceIdStr = String(id);
+
+        // Check if exists
+        let itemExists = false;
+        try {
+          const checkResponse = await targetClient.get(`/items/${collectionName}/${sourceIdStr}`);
+          itemExists = !!checkResponse?.data;
+        } catch (checkErr: any) {
+          itemExists = false;
+        }
+
+        // Update or Create
+        if (itemExists) {
+          importResponse = await targetClient.patch(
+            `/items/${collectionName}/${sourceIdStr}`,
+            itemToImport,
+          );
+          action = "updated";
+        } else {
+          // Create with explicit ID only - no fallback
+          const payloadWithId = { id: sourceIdStr, ...itemToImport };
+          importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
+          action = "created";
+        }
+
+        importedItems.push({
+          originalId: id,
+          newId: importResponse.data?.id,
+          status: "success",
+          action,
+          data: importResponse.data,
+        });
+        successCount++;
+
+      } catch (itemError: any) {
+        errorCount++;
+        importedItems.push({
+          originalId: item.id,
+          status: "error",
+          error: {
+            message: itemError.message,
+            status: itemError.response?.status,
+            details: itemError.response?.data,
+          },
+        });
+      }
+    }
+
+    logStep("import_selected_complete", {
+      totalItems: sourceItems.length,
+      successCount,
+      errorCount,
+    });
+      
+    return {
+      success: true,
+      message: `Successfully imported ${successCount} selected items from ${collectionName} (${errorCount} failed)`,
       importedItems,
       importLog,
     };
@@ -607,6 +901,41 @@ export async function getAllCollections(
     return {
       success: true,
       collections: filteredCollections,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: {
+        message: error.message,
+        status: error.response?.status,
+        details: error.response?.data,
+      },
+    };
+  }
+}
+
+/**
+ * Get all relations from source Directus instance
+ */
+export async function getRelations(
+  sourceUrl: string,
+  sourceToken: string
+): Promise<{
+  success: boolean;
+  relations?: any[];
+  error?: any;
+}> {
+  try {
+    const normalizedToken = sourceToken.replace(/^Bearer\s+/i, "");
+    const sourceDirectus = createDirectus(sourceUrl)
+      .with(staticToken(normalizedToken))
+      .with(rest());
+
+    const relations: any = await sourceDirectus.request(readRelations());
+
+    return {
+      success: true,
+      relations: Array.isArray(relations) ? relations : [],
     };
   } catch (error: any) {
     return {
