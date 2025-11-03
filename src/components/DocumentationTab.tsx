@@ -53,23 +53,26 @@ export function DocumentationTab({ isVisible, onClose }: DocumentationTabProps) 
         {/* Navigation */}
         <div style={{ 
           display: 'flex', 
-          gap: '1rem', 
+          gap: '0.5rem', 
           marginBottom: '2rem',
           borderBottom: '1px solid #e5e7eb',
-          paddingBottom: '1rem'
+          paddingBottom: '1rem',
+          flexWrap: 'wrap'
         }}>
-          {['permissions', 'roles', 'policies', 'examples'].map(section => (
+          {['server', 'collections', 'roles', 'policies', 'permissions', 'access', 'flows', 'operations', 'schema'].map(section => (
             <button
               key={section}
               onClick={() => setActiveSection(section)}
               style={{
-                padding: '0.5rem 1rem',
+                padding: '0.5rem 0.75rem',
                 backgroundColor: activeSection === section ? '#3b82f6' : '#f3f4f6',
                 color: activeSection === section ? 'white' : '#374151',
                 border: 'none',
                 borderRadius: '4px',
                 cursor: 'pointer',
-                textTransform: 'capitalize'
+                textTransform: 'capitalize',
+                fontSize: '0.875rem',
+                fontWeight: '500'
               }}
             >
               {section}
@@ -79,6 +82,65 @@ export function DocumentationTab({ isVisible, onClose }: DocumentationTabProps) 
 
         {/* Content */}
         <div style={{ fontSize: '0.875rem', lineHeight: '1.5' }}>
+          {activeSection === 'server' && (
+            <div>
+              <h3>🖥️ Server API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Server Information</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /server/info</strong> - Get server information
+                  <br />
+                  <em>Returns:</em> Directus version, project info, database info
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Response Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`{
+  "data": {
+    "directus": {
+      "version": "10.x.x"
+    },
+    "project": {
+      "project_name": "My Project",
+      "project_descriptor": "Description",
+      "project_logo": null,
+      "project_color": "#6644FF",
+      "default_language": "en-US",
+      "public_foreground": null,
+      "public_background": null,
+      "public_note": null,
+      "custom_css": null
+    },
+    "database": {
+      "vendor": "postgres",
+      "version": "14.x"
+    }
+  }
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Usage:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Connection testing</strong> - Verify server is reachable</li>
+                  <li><strong>Version checking</strong> - Ensure compatibility</li>
+                  <li><strong>No authentication required</strong> - Public endpoint</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
           {activeSection === 'permissions' && (
             <div>
               <h3>🔐 Permissions API</h3>
@@ -297,6 +359,311 @@ export function DocumentationTab({ isVisible, onClose }: DocumentationTabProps) 
                   <li><strong>UUID identifiers</strong> ✅</li>
                   <li><strong>Modern permission structure</strong> ✅</li>
                   <li><strong>No data transformation needed</strong> ✅</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'collections' && (
+            <div>
+              <h3>📦 Collections API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /collections</strong> - List all collections
+                  <br />
+                  <em>Returns:</em> Array of collection metadata
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Response Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`{
+  "data": [
+    {
+      "collection": "articles",
+      "meta": {
+        "collection": "articles",
+        "icon": "article",
+        "note": null,
+        "display_template": null,
+        "hidden": false,
+        "singleton": false,
+        "translations": null,
+        "archive_field": "status",
+        "archive_value": "archived",
+        "unarchive_value": "draft",
+        "sort_field": "sort"
+      },
+      "schema": {
+        "name": "articles",
+        "comment": null
+      }
+    }
+  ]
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Usage:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Schema discovery</strong> - List available collections</li>
+                  <li><strong>Filtering</strong> - Exclude system collections (directus_*)</li>
+                  <li><strong>Migration planning</strong> - Identify collections to migrate</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'access' && (
+            <div>
+              <h3>🔗 Access API (Role-Policy Relationships)</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /access</strong> - List all role-policy relationships
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, meta, sort, filter
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /access</strong> - Create role-policy relationship
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Access Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// POST /access (Create relationship)
+{
+  "role": "role-uuid",      // UUID of role
+  "policy": "policy-uuid",  // UUID of policy
+  "sort": null              // Optional sort order
+}
+
+// Response
+{
+  "data": {
+    "id": 123,              // Auto-generated ID
+    "role": "role-uuid",
+    "policy": "policy-uuid",
+    "sort": null
+  }
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#fef3c7', padding: '1rem', borderRadius: '6px' }}>
+                <strong>⚠️ Important:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Junction table</strong> - Links roles to policies (many-to-many)</li>
+                  <li><strong>Check duplicates</strong> - Verify relationship doesn't exist before creating</li>
+                  <li><strong>Required for access control</strong> - Roles need policies to have permissions</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'flows' && (
+            <div>
+              <h3>🔄 Flows API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /flows</strong> - List all flows
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, meta, sort, filter
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /flows</strong> - Create new flow (with operations)
+                  <br />
+                  <strong>PATCH /flows/{'{id}'}</strong> - Update existing flow
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Flow Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`{
+  "id": "flow-uuid",
+  "name": "My Flow",
+  "icon": "bolt",
+  "color": "#6644FF",
+  "description": "Flow description",
+  "status": "active",           // "active" | "inactive"
+  "trigger": "manual",          // "manual" | "event" | "webhook" | "schedule"
+  "accountability": "all",      // "all" | "activity"
+  "options": {
+    "collections": ["articles"],
+    "location": "item"
+  },
+  "operation": "operation-uuid", // Root operation UUID
+  "operations": [...]            // Array of operations (nested)
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Key Features:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Automation</strong> - Trigger workflows on events</li>
+                  <li><strong>Operations tree</strong> - Linked via operation field</li>
+                  <li><strong>Preserve IDs</strong> - Important for operation references</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'operations' && (
+            <div>
+              <h3>⚙️ Operations API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /operations</strong> - List all operations
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, meta, sort, filter
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>PATCH /operations/{'{id}'}</strong> - Update operation (for references)
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Operation Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`{
+  "id": "operation-uuid",
+  "name": "Send Email",
+  "key": "send_email",
+  "type": "mail",              // Operation type
+  "position_x": 10,
+  "position_y": 20,
+  "options": {                 // Type-specific options
+    "to": "user@example.com",
+    "subject": "Hello",
+    "body": "Message"
+  },
+  "resolve": "next-op-uuid",   // Success path
+  "reject": "error-op-uuid",   // Error path
+  "flow": "flow-uuid",         // Parent flow
+  "date_created": "2024-01-01",
+  "user_created": "user-uuid"
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#fef2f2', padding: '1rem', borderRadius: '6px' }}>
+                <strong>⚠️ Migration Notes:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Reference updates</strong> - Update resolve/reject after creating operations</li>
+                  <li><strong>Dependency order</strong> - Create operations in correct sequence</li>
+                  <li><strong>ID mapping</strong> - Track old ID → new ID for references</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'schema' && (
+            <div>
+              <h3>🏗️ Schema API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /schema/snapshot</strong> - Get complete schema snapshot
+                  <br />
+                  <em>Returns:</em> Collections, fields, and relationships
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /schema/diff?force=true</strong> - Compare schemas
+                  <br />
+                  <strong>POST /schema/apply?force=true</strong> - Apply schema changes
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Schema Workflow</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// 1. Get snapshot from source
+GET /schema/snapshot
+→ Returns: { collections: {...}, fields: {...}, relations: {...} }
+
+// 2. Compare with target (send snapshot as body)
+POST /schema/diff?force=true
+Body: { collections: [...], fields: [...], relations: [...] }
+→ Returns: { diff: [...], hash: "..." }
+
+// 3. Apply changes to target (send diff as body)
+POST /schema/apply?force=true
+Body: { diff: [...], hash: "..." }
+→ Creates/updates collections, fields, relations`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#fef3c7', padding: '1rem', borderRadius: '6px' }}>
+                <strong>⚠️ CRITICAL:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Run BEFORE data migration</strong> - Ensures collections exist</li>
+                  <li><strong>Filter system collections</strong> - Exclude directus_* collections</li>
+                  <li><strong>Convert format</strong> - Object → Array for diff/apply</li>
+                  <li><strong>Use force=true</strong> - Required parameter</li>
                 </ul>
               </div>
             </div>

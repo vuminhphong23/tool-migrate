@@ -43,7 +43,7 @@ export function AccessControlManager({
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [selectedPolicies, setSelectedPolicies] = useState<string[]>([]);
   const [selectedPermissions, setSelectedPermissions] = useState<(string | number)[]>([]);
-  const [permissionFilter, setPermissionFilter] = useState<'all' | 'related' | 'orphaned'>('all');
+  const [permissionFilter, setPermissionFilter] = useState<'all' | 'related' | 'orphaned' | 'existing' | 'new'>('all');
   const [policyFilter, setPolicyFilter] = useState<'all' | 'existing' | 'new'>('all');
   const [roleFilter, setRoleFilter] = useState<'all' | 'existing' | 'new'>('all');
   
@@ -140,12 +140,30 @@ export function AccessControlManager({
     const relatedPermissions = sourcePermissions.filter(permission => 
       permission.policy && policyIds.includes(permission.policy)
     );
-    console.log('🔍 DEBUG: Auto-selecting permissions from policies:', policyIds);
-    console.log('🔍 DEBUG: Related permissions found:', relatedPermissions.length);
-    relatedPermissions.forEach((p: any) => {
-      console.log(`  - Auto-selecting ID: ${p.id} (${p.collection}.${p.action})`);
-    });
     setSelectedPermissions(relatedPermissions.map(p => p.id));
+  };
+
+  // Auto-select policies and permissions when roles change
+  const updatePoliciesAndPermissionsFromRoles = (roleIds: string[]) => {
+    const selectedRolesData = sourceRoles.filter(role => roleIds.includes(role.id));
+    
+    // Get all policies from selected roles
+    const rolePolicies = sourceRoles
+      .filter(role => roleIds.includes(role.id))
+      .flatMap(role => role.policies || []);
+    
+    // Remove duplicates
+    const uniquePolicies = [...new Set(rolePolicies)];
+    
+    if (uniquePolicies.length === 0) {
+      return;
+    }
+    
+    // Update selected policies
+    setSelectedPolicies(uniquePolicies);
+    
+    // Auto-select permissions from those policies
+    updatePermissionsFromPolicies(uniquePolicies);
   };
 
   // Group permissions by policy
@@ -162,15 +180,37 @@ export function AccessControlManager({
       }
     };
     
-    // Apply search filter first
+    // Apply search filter and status filter
     let filteredPermissions = sourcePermissions.filter(permission => {
-      if (!permissionSearch) return true;
-      const searchLower = permissionSearch.toLowerCase();
-      return (
-        permission.collection.toLowerCase().includes(searchLower) ||
-        permission.action.toLowerCase().includes(searchLower) ||
-        (permission.policy && permission.policy.toLowerCase().includes(searchLower))
-      );
+      // Search filter
+      if (permissionSearch) {
+        const searchLower = permissionSearch.toLowerCase();
+        const matchesSearch = (
+          permission.collection.toLowerCase().includes(searchLower) ||
+          permission.action.toLowerCase().includes(searchLower) ||
+          (permission.policy && permission.policy.toLowerCase().includes(searchLower))
+        );
+        if (!matchesSearch) return false;
+      }
+      
+      // Status filter (existing/new)
+      if (permissionFilter === 'existing') {
+        const existsInTarget = targetPermissions.some(targetPerm => 
+          targetPerm.collection === permission.collection &&
+          targetPerm.action === permission.action &&
+          targetPerm.policy === permission.policy
+        );
+        if (!existsInTarget) return false;
+      } else if (permissionFilter === 'new') {
+        const existsInTarget = targetPermissions.some(targetPerm => 
+          targetPerm.collection === permission.collection &&
+          targetPerm.action === permission.action &&
+          targetPerm.policy === permission.policy
+        );
+        if (existsInTarget) return false;
+      }
+      
+      return true;
     });
 
     // Find policies with many permissions (threshold: 25+) that aren't already special
@@ -277,7 +317,15 @@ export function AccessControlManager({
       });
     }
 
-    return groups;
+    // Remove empty groups (groups with no permissions after filtering)
+    const nonEmptyGroups: any = {};
+    Object.keys(groups).forEach(key => {
+      if (groups[key].permissions.length > 0) {
+        nonEmptyGroups[key] = groups[key];
+      }
+    });
+
+    return nonEmptyGroups;
   };
 
   // Toggle group collapse
@@ -345,11 +393,12 @@ export function AccessControlManager({
       const sourceClient = new DirectusClient(sourceUrl, sourceToken);
       const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      // Load source data
-      const [sourceRolesRes, sourcePoliciesRes, sourcePermissionsRes] = await Promise.all([
-        sourceClient.get('/roles'),
-        sourceClient.get('/policies'),
-        sourceClient.get('/permissions')
+      // Load source data and access relationships
+      const [sourceRolesRes, sourcePoliciesRes, sourcePermissionsRes, sourceAccessRes] = await Promise.all([
+        sourceClient.get('/roles', { params: { limit: -1 } }),
+        sourceClient.get('/policies', { params: { limit: -1 } }),
+        sourceClient.get('/permissions', { params: { limit: -1 } }),
+        sourceClient.get('/access', { params: { limit: -1 } }).catch(() => ({ data: [] })) // Fetch role-policy relationships
       ]);
 
       // Load target data for comparison
@@ -362,19 +411,24 @@ export function AccessControlManager({
       const sourceRolesData = sourceRolesRes.data || [];
       const sourcePoliciesData = sourcePoliciesRes.data || [];
       const sourcePermissionsData = sourcePermissionsRes.data || [];
+      const sourceAccessData = sourceAccessRes.data || [];
       const targetRolesData = targetRolesRes.data || [];
       const targetPoliciesData = targetPoliciesRes.data || [];
       const targetPermissionsData = targetPermissionsRes.data || [];
 
-      // Debug logging for ID tracking
-      console.log('🔍 DEBUG: Source permissions loaded:', sourcePermissionsData.length);
-      const newsListingPerms = sourcePermissionsData.filter((p: any) => p.collection === 'news_listing' && p.action === 'create');
-      console.log('🔍 DEBUG: news_listing.create permissions:', newsListingPerms);
-      newsListingPerms.forEach((p: any) => {
-        console.log(`  - ID: ${p.id}, Policy: ${p.policy}, Collection: ${p.collection}, Action: ${p.action}`);
+      // Map access relationships to roles (add policies array to each role)
+      const sourceRolesWithPolicies = sourceRolesData.map((role: any) => {
+        const rolePolicies = sourceAccessData
+          .filter((access: any) => access.role === role.id)
+          .map((access: any) => access.policy);
+        
+        return {
+          ...role,
+          policies: rolePolicies
+        };
       });
 
-      setSourceRoles(sourceRolesData);
+      setSourceRoles(sourceRolesWithPolicies); // Use roles with policies mapped
       setSourcePolicies(sourcePoliciesData);
       setSourcePermissions(sourcePermissionsData);
       setTargetRoles(targetRolesData);
@@ -492,13 +546,6 @@ export function AccessControlManager({
         selectedPermissions.includes(permission.id)
       );
       
-      // Debug logging for migration
-      console.log('🔍 DEBUG: Selected permission IDs:', selectedPermissions);
-      console.log('🔍 DEBUG: Permissions to migrate:', permissionsToMigrate.length);
-      permissionsToMigrate.forEach((p: any) => {
-        console.log(`  - Migrating ID: ${p.id}, Collection: ${p.collection}, Action: ${p.action}, Policy: ${p.policy}`);
-      });
-      
       const result = await importAccessControlData(
         rolesToMigrate,
         policiesToMigrate,
@@ -509,13 +556,32 @@ export function AccessControlManager({
       );
       
       setMigrationResults(result);
-      // Stay on selection step to show results in main screen
-      // setStep('results'); // Commented out to keep results in main screen
       
-      onStatusUpdate({
-        type: result.success ? 'success' : 'error',
-        message: result.message
-      });
+      if (result.success) {
+        // Deselect successfully migrated items
+        const successfulRoleIds = result.importedRoles?.filter((r: any) => r.status === 'success').map((r: any) => r.originalId) || [];
+        const successfulPolicyIds = result.importedPolicies?.filter((p: any) => p.status === 'success').map((p: any) => p.originalId) || [];
+        const successfulPermissionIds = result.importedPermissions?.filter((p: any) => p.status === 'success').map((p: any) => p.originalId) || [];
+        
+        
+        // Remove successful items from selection
+        setSelectedRoles(prev => prev.filter(id => !successfulRoleIds.includes(id)));
+        setSelectedPolicies(prev => prev.filter(id => !successfulPolicyIds.includes(id)));
+        setSelectedPermissions(prev => prev.filter(id => !successfulPermissionIds.includes(id)));
+        
+        // Refresh data to update status (New → Existing)
+        await loadSourceData();
+        
+        onStatusUpdate({
+          type: 'success',
+          message: `${result.message} - Data refreshed and selections cleared`
+        });
+      } else {
+        onStatusUpdate({
+          type: 'error',
+          message: result.message
+        });
+      }
     } catch (error: any) {
       onStatusUpdate({
         type: 'error',
@@ -720,6 +786,100 @@ export function AccessControlManager({
                     </div>
                   </div>
 
+                  {/* Filter Buttons */}
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                    <button
+                      onClick={() => {
+                        setPermissionFilter('all');
+                        // Select all visible permissions
+                        const allPermissionIds = sourcePermissions.map(p => p.id);
+                        setSelectedPermissions(allPermissionIds);
+                      }}
+                      style={{
+                        backgroundColor: '#3b82f6',
+                        color: 'white',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPermissionFilter('existing');
+                        // Select only existing permissions
+                        const existingPermissionIds = sourcePermissions
+                          .filter(permission => {
+                            return targetPermissions.some(targetPerm => 
+                              targetPerm.collection === permission.collection &&
+                              targetPerm.action === permission.action &&
+                              targetPerm.policy === permission.policy
+                            );
+                          })
+                          .map(p => p.id);
+                        setSelectedPermissions(existingPermissionIds);
+                      }}
+                      style={{
+                        backgroundColor: permissionFilter === 'existing' ? '#f97316' : '#e5e7eb',
+                        color: permissionFilter === 'existing' ? 'white' : '#374151',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Existing ({sourcePermissions.filter(p => targetPermissions.some(tp => tp.collection === p.collection && tp.action === p.action && tp.policy === p.policy)).length})
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPermissionFilter('new');
+                        // Select only new permissions
+                        const newPermissionIds = sourcePermissions
+                          .filter(permission => {
+                            return !targetPermissions.some(targetPerm => 
+                              targetPerm.collection === permission.collection &&
+                              targetPerm.action === permission.action &&
+                              targetPerm.policy === permission.policy
+                            );
+                          })
+                          .map(p => p.id);
+                        setSelectedPermissions(newPermissionIds);
+                      }}
+                      style={{
+                        backgroundColor: permissionFilter === 'new' ? '#10b981' : '#e5e7eb',
+                        color: permissionFilter === 'new' ? 'white' : '#374151',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      New ({sourcePermissions.filter(p => !targetPermissions.some(tp => tp.collection === p.collection && tp.action === p.action && tp.policy === p.policy)).length})
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPermissionFilter('all');
+                        setSelectedPermissions([]);
+                      }}
+                      style={{
+                        backgroundColor: '#6b7280',
+                        color: 'white',
+                        padding: '0.5rem 0.75rem',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+
                   {/* Search */}
                   <div style={{ marginBottom: '1rem' }}>
                     <input
@@ -816,10 +976,11 @@ export function AccessControlManager({
                             </div>
                             
                             {!isCollapsed && (
-                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setPermissionFilter('all');
                                     const groupPermissionIds = group.permissions.map((p: any) => p.id);
                                     setSelectedPermissions(prev => [...new Set([...prev, ...groupPermissionIds])]);
                                   }}
@@ -838,6 +999,63 @@ export function AccessControlManager({
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setPermissionFilter('existing');
+                                    // Select only existing permissions in this group
+                                    const existingIds = group.permissions
+                                      .filter((p: any) => {
+                                        return targetPermissions.some(targetPerm => 
+                                          targetPerm.collection === p.collection &&
+                                          targetPerm.action === p.action &&
+                                          targetPerm.policy === p.policy
+                                        );
+                                      })
+                                      .map((p: any) => p.id);
+                                    setSelectedPermissions(prev => [...new Set([...prev, ...existingIds])]);
+                                  }}
+                                  style={{
+                                    backgroundColor: '#f97316',
+                                    color: 'white',
+                                    padding: '0.25rem 0.5rem',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  Existing ({group.permissions.filter((p: any) => targetPermissions.some((tp: any) => tp.collection === p.collection && tp.action === p.action && tp.policy === p.policy)).length})
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPermissionFilter('new');
+                                    // Select only new permissions in this group
+                                    const newIds = group.permissions
+                                      .filter((p: any) => {
+                                        return !targetPermissions.some(targetPerm => 
+                                          targetPerm.collection === p.collection &&
+                                          targetPerm.action === p.action &&
+                                          targetPerm.policy === p.policy
+                                        );
+                                      })
+                                      .map((p: any) => p.id);
+                                    setSelectedPermissions(prev => [...new Set([...prev, ...newIds])]);
+                                  }}
+                                  style={{
+                                    backgroundColor: '#10b981',
+                                    color: 'white',
+                                    padding: '0.25rem 0.5rem',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  New ({group.permissions.filter((p: any) => !targetPermissions.some((tp: any) => tp.collection === p.collection && tp.action === p.action && tp.policy === p.policy)).length})
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPermissionFilter('all');
                                     const groupPermissionIds = group.permissions.map((p: any) => p.id);
                                     setSelectedPermissions(prev => prev.filter(id => !groupPermissionIds.includes(id as any)));
                                   }}
@@ -860,42 +1078,62 @@ export function AccessControlManager({
                           {/* Group Content */}
                           {!isCollapsed && (
                             <div style={{ padding: '0.5rem' }}>
-                              {displayedPermissions.map(permission => (
-                                <label key={permission.id} style={{ 
-                                  display: 'block', 
-                                  padding: '0.5rem', 
-                                  cursor: 'pointer', 
-                                  borderBottom: '1px solid #f3f4f6',
-                                  backgroundColor: selectedPermissions.includes(permission.id) ? '#f0f9ff' : 'transparent'
-                                }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center' }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedPermissions.includes(permission.id)}
-                                        onChange={(e) => {
-                                          if (e.target.checked) {
-                                            console.log(`🔍 DEBUG: Adding permission ID ${permission.id} (${permission.collection}.${permission.action}) to selection`);
-                                            setSelectedPermissions(prev => [...prev, permission.id]);
-                                          } else {
-                                            console.log(`🔍 DEBUG: Removing permission ID ${permission.id} (${permission.collection}.${permission.action}) from selection`);
-                                            setSelectedPermissions(prev => prev.filter(id => id !== permission.id));
-                                          }
-                                        }}
-                                        style={{ marginRight: '0.75rem' }}
-                                      />
-                                      <div>
-                                        <div style={{ fontWeight: '500', fontSize: '0.875rem' }}>
-                                          {permission.collection}.{permission.action}
-                                        </div>
-                                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                                          ID: {permission.id} • Policy: {permission.policy || 'None'}
+                              {displayedPermissions.map(permission => {
+                                // Check if this permission exists in target
+                                const existsInTarget = targetPermissions.some(targetPerm => 
+                                  targetPerm.collection === permission.collection &&
+                                  targetPerm.action === permission.action &&
+                                  targetPerm.policy === permission.policy
+                                );
+                                
+                                return (
+                                  <label key={permission.id} style={{ 
+                                    display: 'block', 
+                                    padding: '0.5rem', 
+                                    cursor: 'pointer', 
+                                    borderBottom: '1px solid #f3f4f6',
+                                    backgroundColor: selectedPermissions.includes(permission.id) ? '#f0f9ff' : 'transparent'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedPermissions.includes(permission.id)}
+                                          onChange={(e) => {
+                                            if (e.target.checked) {
+                                              setSelectedPermissions(prev => [...prev, permission.id]);
+                                            } else {
+                                              setSelectedPermissions(prev => prev.filter(id => id !== permission.id));
+                                            }
+                                          }}
+                                          style={{ marginRight: '0.75rem' }}
+                                        />
+                                        <div style={{ flex: 1 }}>
+                                          <div style={{ fontWeight: '500', fontSize: '0.875rem' }}>
+                                            {permission.collection}.{permission.action}
+                                          </div>
+                                          <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                            ID: {permission.id} • Policy: {permission.policy || 'None'}
+                                          </div>
                                         </div>
                                       </div>
+                                      
+                                      {/* Individual Permission Status Badge */}
+                                      <span style={{
+                                        backgroundColor: existsInTarget ? '#f97316' : '#10b981',
+                                        color: 'white',
+                                        padding: '0.25rem 0.5rem',
+                                        borderRadius: '12px',
+                                        fontSize: '0.75rem',
+                                        fontWeight: '500',
+                                        marginLeft: '0.5rem'
+                                      }}>
+                                        {existsInTarget ? 'Existing' : 'New'}
+                                      </span>
                                     </div>
-                                  </div>
-                                </label>
-                              ))}
+                                  </label>
+                                );
+                              })}
                               
                               {/* Pagination for this group */}
                               {group.permissions.length > permissionsPerPage && (() => {
@@ -1081,14 +1319,26 @@ export function AccessControlManager({
                 <div style={{ marginBottom: '2rem' }}>
                     <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center' }}>
                       👥 Roles ({sourceRoles.length})
+                      {selectedRoles.length > 0 && (
+                        <span style={{ 
+                          marginLeft: '0.5rem', 
+                          fontSize: '0.75rem', 
+                          color: '#059669',
+                          fontWeight: 'normal'
+                        }}>
+                          → Auto-selecting related policies & permissions
+                        </span>
+                      )}
                     </h3>
                     
                     {/* Tab Buttons */}
-                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                       <button
                         onClick={() => {
                           const filtered = getFilteredRoles();
-                          setSelectedRoles(filtered.map(r => r.id));
+                          const roleIds = filtered.map(r => r.id);
+                          setSelectedRoles(roleIds);
+                          updatePoliciesAndPermissionsFromRoles(roleIds);
                         }}
                         style={{
                           backgroundColor: '#3b82f6',
@@ -1133,6 +1383,8 @@ export function AccessControlManager({
                       <button
                         onClick={() => {
                           setSelectedRoles([]);
+                          setSelectedPolicies([]);
+                          setSelectedPermissions([]);
                           setRoleFilter('all');
                         }}
                         style={{
@@ -1160,16 +1412,27 @@ export function AccessControlManager({
                                 checked={selectedRoles.includes(role.id)}
                                 onChange={(e) => {
                                   if (e.target.checked) {
-                                    setSelectedRoles(prev => [...prev, role.id]);
+                                    const newRoles = [...selectedRoles, role.id];
+                                    setSelectedRoles(newRoles);
+                                    updatePoliciesAndPermissionsFromRoles(newRoles);
                                   } else {
-                                    setSelectedRoles(prev => prev.filter(id => id !== role.id));
+                                    const newRoles = selectedRoles.filter(id => id !== role.id);
+                                    setSelectedRoles(newRoles);
+                                    updatePoliciesAndPermissionsFromRoles(newRoles);
                                   }
                                 }}
                                 style={{ marginRight: '0.75rem' }}
                               />
                               <div>
                                 <div style={{ fontWeight: '500' }}>{role.name}</div>
-                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>ID: {role.id}</div>
+                                <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                  ID: {role.id}
+                                  {role.policies && role.policies.length > 0 && (
+                                    <span style={{ marginLeft: '0.5rem', color: '#059669' }}>
+                                      • {role.policies.length} {role.policies.length === 1 ? 'policy' : 'policies'}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
                             <span style={{

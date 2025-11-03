@@ -386,7 +386,6 @@ export async function importFlowsToDirectus(
       details
     };
     importLog.push(logEntry);
-    console.log(`[${step}]`, details);
   };
 
   try {
@@ -423,38 +422,136 @@ export async function importFlowsToDirectus(
       });
     }
 
-    // Import flows first (without operations reference)
+    // Import each flow as a complete unit (flow + operations together)
+    // This is the correct approach according to Directus API
     for (const sourceFlow of sourceFlows) {
       try {
         const flowId = options.preserveIds ? sourceFlow.id : idMapping[sourceFlow.id];
         const { date_created, user_created, date_updated, user_updated, ...cleanFlow } = sourceFlow;
         
-        const flowToImport = {
+        // Get all operations for this flow
+        const flowOperations = sourceOperations.filter(op => op.flow === sourceFlow.id);
+        
+        // Build operations array WITHOUT resolve/reject first (to avoid circular reference issues)
+        const operations = flowOperations.map(sourceOp => {
+          const operationId = options.preserveIds ? sourceOp.id : idMapping[sourceOp.id];
+          
+          const { date_created, user_created, date_updated, user_updated, resolve, reject, ...cleanOp } = sourceOp;
+          
+          return {
+            ...cleanOp,
+            id: options.preserveIds ? operationId : undefined,
+            flow: flowId,
+            resolve: null, // Will be set after all operations are created
+            reject: null   // Will be set after all operations are created
+          };
+        });
+        
+        // Determine root operation
+        const rootOperationId = sourceFlow.operation ? 
+          (options.preserveIds ? sourceFlow.operation : idMapping[sourceFlow.operation]) : 
+          null;
+        
+        // Build complete flow with operations
+        const flowWithOperations = {
           ...cleanFlow,
-          id: flowId,
-          operation: null // Will be set after operations are imported
+          id: options.preserveIds ? flowId : undefined,
+          operation: rootOperationId,
+          operations: operations
         };
-
+        
+        // Try to import the complete flow
         let importResponse;
         try {
-          // Try to update existing flow
-          importResponse = await client.patch(`/flows/${flowId}`, flowToImport);
-          logStep('flow_updated', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
-        } catch (updateError) {
-          // Create new flow
-          importResponse = await client.post('/flows', flowToImport);
+          // Try POST first (create new flow with operations)
+          importResponse = await client.post('/flows', flowWithOperations);
           logStep('flow_created', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
+          
+          importedFlows?.push({
+            originalId: sourceFlow.id,
+            newId: flowId,
+            name: sourceFlow.name,
+            status: 'success'
+          });
+          
+          // Mark all operations as imported
+          flowOperations.forEach(op => {
+            const opId = options.preserveIds ? op.id : idMapping[op.id];
+            importedOperations?.push({
+              originalId: op.id,
+              newId: opId,
+              flowId: flowId,
+              status: 'success'
+            });
+          });
+          
+          // Now update resolve/reject references for all operations
+          for (const sourceOp of flowOperations) {
+            if (sourceOp.resolve || sourceOp.reject) {
+              try {
+                const opId = options.preserveIds ? sourceOp.id : idMapping[sourceOp.id];
+                const resolveId = sourceOp.resolve ? (options.preserveIds ? sourceOp.resolve : idMapping[sourceOp.resolve]) : null;
+                const rejectId = sourceOp.reject ? (options.preserveIds ? sourceOp.reject : idMapping[sourceOp.reject]) : null;
+                
+                await client.patch(`/operations/${opId}`, {
+                  resolve: resolveId,
+                  reject: rejectId
+                });
+                
+              } catch (refError: any) {
+              }
+            }
+          }
+          
+        } catch (createError: any) {
+          
+          // If POST fails, try PATCH (update existing)
+          const { id, operations: ops, ...flowUpdateData } = flowWithOperations;
+          
+          try {
+            await client.patch(`/flows/${flowId}`, flowUpdateData);
+            logStep('flow_updated', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
+            
+            importedFlows?.push({
+              originalId: sourceFlow.id,
+              newId: flowId,
+              name: sourceFlow.name,
+              status: 'success'
+            });
+            
+            // Update operations individually
+            for (const operation of operations) {
+              try {
+                const opId = operation.id || idMapping[sourceOperations.find(o => o.flow === sourceFlow.id && o.key === operation.key)?.id || ''];
+                const { id: _, ...opData } = operation;
+                
+                await client.patch(`/operations/${opId}`, opData);
+                
+                importedOperations?.push({
+                  originalId: sourceOperations.find(o => o.id === opId)?.id || opId,
+                  newId: opId,
+                  flowId: flowId,
+                  status: 'success'
+                });
+              } catch (opError: any) {
+                importedOperations?.push({
+                  originalId: operation.id || '',
+                  newId: '',
+                  flowId: flowId,
+                  status: 'error',
+                  error: opError.message
+                });
+              }
+            }
+            
+          } catch (updateError: any) {
+            throw updateError;
+          }
         }
-
-        importedFlows?.push({
-          originalId: sourceFlow.id,
-          newId: flowId,
-          name: sourceFlow.name,
-          status: 'success'
-        });
 
       } catch (error: any) {
         logStep('flow_import_failed', { flowId: sourceFlow.id, error: error.message });
+        
         importedFlows?.push({
           originalId: sourceFlow.id,
           newId: '',
@@ -463,78 +560,7 @@ export async function importFlowsToDirectus(
           error: error.message
         });
       }
-    }
-
-    // Import operations with updated references
-    for (const sourceOperation of sourceOperations) {
-      try {
-        const operationId = options.preserveIds ? sourceOperation.id : idMapping[sourceOperation.id];
-        const flowId = options.preserveIds ? sourceOperation.flow : idMapping[sourceOperation.flow];
-        const resolveId = sourceOperation.resolve ? (options.preserveIds ? sourceOperation.resolve : idMapping[sourceOperation.resolve]) : null;
-        const rejectId = sourceOperation.reject ? (options.preserveIds ? sourceOperation.reject : idMapping[sourceOperation.reject]) : null;
-
-        const { date_created, user_created, date_updated, user_updated, ...cleanOperation } = sourceOperation;
-        
-        let operationToImport: Partial<DirectusOperation> = {
-          ...cleanOperation,
-          id: operationId,
-          flow: flowId,
-          resolve: resolveId,
-          reject: rejectId
-        };
-
-        // Transform options if requested
-        if (options.transformOptions && operationToImport.id) {
-          operationToImport = transformOperationOptions(operationToImport as DirectusOperation, options.environmentMapping);
-        }
-
-        let importResponse;
-        try {
-          // Try to update existing operation
-          importResponse = await client.patch(`/operations/${operationId}`, operationToImport);
-          logStep('operation_updated', { originalId: sourceOperation.id, newId: operationId, flowId });
-        } catch (updateError) {
-          // Create new operation
-          importResponse = await client.post('/operations', operationToImport);
-          logStep('operation_created', { originalId: sourceOperation.id, newId: operationId, flowId });
-        }
-
-        importedOperations?.push({
-          originalId: sourceOperation.id,
-          newId: operationId,
-          flowId: flowId,
-          status: 'success'
-        });
-
-      } catch (error: any) {
-        logStep('operation_import_failed', { operationId: sourceOperation.id, error: error.message });
-        importedOperations?.push({
-          originalId: sourceOperation.id,
-          newId: '',
-          flowId: sourceOperation.flow,
-          status: 'error',
-          error: error.message
-        });
-      }
-    }
-
-    // Update flows with root operation references
-    for (const sourceFlow of sourceFlows) {
-      if (sourceFlow.operation) {
-        try {
-          const flowId = options.preserveIds ? sourceFlow.id : idMapping[sourceFlow.id];
-          const rootOperationId = options.preserveIds ? sourceFlow.operation : idMapping[sourceFlow.operation];
-
-          await client.patch(`/flows/${flowId}`, {
-            operation: rootOperationId
-          });
-
-          logStep('flow_root_operation_updated', { flowId, rootOperationId });
-        } catch (error: any) {
-          logStep('flow_root_operation_update_failed', { flowId: sourceFlow.id, error: error.message });
-        }
-      }
-    }
+    }  
 
     const successfulFlows = importedFlows?.filter(f => f.status === 'success').length || 0;
     const successfulOperations = importedOperations?.filter(o => o.status === 'success').length || 0;

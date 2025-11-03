@@ -70,7 +70,37 @@ export class DirectusClient {
         throw error;
       }
 
-      return await response.json();
+      // Handle empty response body (e.g., 204 No Content or successful operations with no data)
+      const contentType = response.headers.get('content-type');
+      const contentLength = response.headers.get('content-length');
+      
+      // If no content or content-length is 0, return empty object
+      if (contentLength === '0' || response.status === 204) {
+        return { data: null };
+      }
+      
+      // If response has no content-type or is not JSON, try to parse as text
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        // If text is empty, return empty object
+        if (!text || text.trim() === '') {
+          return { data: null };
+        }
+        // Try to parse as JSON anyway
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { data: text };
+        }
+      }
+
+      // Normal JSON response
+      const text = await response.text();
+      if (!text || text.trim() === '') {
+        return { data: null };
+      }
+      
+      return JSON.parse(text);
     } catch (error: any) {
       // Re-throw with consistent error structure
       if (!error.response) {

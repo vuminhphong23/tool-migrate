@@ -86,7 +86,6 @@ export async function validateDirectusToken(
       details,
     };
     validationLog.push(logEntry);
-    console.log(`[${step}]`, details);
   };
 
   try {
@@ -179,26 +178,16 @@ export async function testCollectionAccess(
       .with(staticToken(normalizedToken))
       .with(rest());
 
-    console.log("Making API request to:", `${selectedDomain}/items/${collectionName}?limit=1`);
-
     try {
       const testResult = await sourceDirectus.request(
         (readItems as any)(collectionName, { limit: 1 }),
       );
-
-      console.log("Collection access test successful:", {
-        collection: collectionName,
-        resultType: typeof testResult,
-        isArray: Array.isArray(testResult),
-        length: Array.isArray(testResult) ? testResult.length : "N/A",
-      });
 
       return {
         success: true,
         message: `Successfully accessed collection '${collectionName}'`,
       };
     } catch (sdkError: any) {
-      console.log("SDK method failed:", sdkError.message);
 
       // Try to check if collection exists
       try {
@@ -243,13 +232,6 @@ export async function testCollectionAccess(
       }
     }
   } catch (error: any) {
-    console.error("Collection access test failed:", {
-      collectionName,
-      error: error.message,
-      status: error.response?.status,
-      details: error.response?.data,
-      url: selectedDomain,
-    });
 
     return {
       success: false,
@@ -277,7 +259,6 @@ export async function testMultipleCollections(
   const results: Record<string, { success: boolean; message: string; error?: any }> = {};
 
   for (const collection of testCollections) {
-    console.log(`Testing collection: ${collection}`);
     const result = await testCollectionAccess(selectedDomain, adminToken, collection);
     results[collection] = result;
 
@@ -305,6 +286,7 @@ export async function importFromDirectus(
   options?: {
     limit?: number;
     titleFilter?: string;
+    onProgress?: (current: number, total: number) => void;
   }
 ): Promise<ImportResult> {
   const importLog: ImportLogEntry[] = [];
@@ -316,7 +298,6 @@ export async function importFromDirectus(
       details,
     };
     importLog.push(logEntry);
-    console.log(`[${step}]`, details);
   };
 
   try {
@@ -396,17 +377,14 @@ export async function importFromDirectus(
     // Build query parameters
     const queryParams: any = { limit: fetchLimit };
     
+    // Note: titleFilter is intentionally NOT applied here to avoid filtering issues
+    // with collections that don't have a 'translations' field structure.
+    // The filter was causing empty results for collections like 'searchsg_performance_metrics'
+    // If filtering is needed, it should be implemented per-collection based on schema
     if (options?.titleFilter && options.titleFilter.trim()) {
-      queryParams.filter = {
-        translations: {
-          title: {
-            _contains: options.titleFilter.trim()
-          }
-        }
-      };
-      logStep("title_filter_applied", { 
+      logStep("title_filter_skipped", { 
         filter: options.titleFilter.trim(), 
-        approach: "translations.title only" 
+        reason: "Generic filter not applied to avoid schema mismatch issues" 
       });
     }
     
@@ -423,11 +401,10 @@ export async function importFromDirectus(
     });
 
     if (sourceItems.length === 0) {
-      logStep("collection_empty", { collectionName, titleFilter: options?.titleFilter });
-      const filterMessage = options?.titleFilter && options.titleFilter.trim() ? ` with title filter '${options.titleFilter.trim()}'` : '';
+      logStep("collection_empty", { collectionName });
       return {
         success: true,
-        message: `Collection '${collectionName}'${filterMessage} is empty on the source server`,
+        message: `Collection '${collectionName}' is empty on the source server`,
         importedItems: [],
         importLog,
       };
@@ -447,37 +424,48 @@ export async function importFromDirectus(
       ? sourceItems.slice(0, options.limit) 
       : sourceItems;
 
-    for (const item of itemsToImport) {
+    const totalItems = itemsToImport.length;
+    
+    for (let i = 0; i < itemsToImport.length; i++) {
+      const item = itemsToImport[i];
+      
+      // Report progress
+      if (options?.onProgress) {
+        options.onProgress(i + 1, totalItems);
+      }
+      
       try {
         // Remove system fields that shouldn't be imported
         const { id, date_created, date_updated, user_created, user_updated, ...cleanItem } = item;
 
-        // Try to import with same ID first, then fallback to creating new
+        // Try to create first (most common case for migration), then update if exists
         let importResponse: any | null = null;
         let action: "created" | "updated" = "created";
 
         const sourceIdStr = String(id);
 
         try {
-          // Try update by same ID
-          logStep("item_update_by_id_start", { sourceId: sourceIdStr, collectionName });
-          importResponse = await targetClient.patch(
-            `/items/${collectionName}/${sourceIdStr}`,
-            cleanItem,
-          );
-          action = "updated";
-        } catch (updateByIdErr: any) {
-          // If update fails, try to create with explicit ID
+          // Try to create with explicit ID first (upsert mode)
+          logStep("item_create_with_explicit_id_start", { sourceId: sourceIdStr, collectionName });
+          const payloadWithId = { id: sourceIdStr, ...cleanItem };
+          importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
+          action = "created";
+        } catch (createErr: any) {
+          // If create fails (item might already exist), try to update
           try {
-            logStep("item_create_with_explicit_id_start", { sourceId: sourceIdStr, collectionName });
-            const payloadWithId = { id: sourceIdStr, ...cleanItem };
-            importResponse = await targetClient.post(`/items/${collectionName}?upsert=1&keys=id`, payloadWithId);
-            action = "created";
-          } catch (createWithIdErr: any) {
-            logStep("item_create_with_id_failed_fallback_plain_create", { 
+            logStep("item_update_by_id_start", { sourceId: sourceIdStr, collectionName, reason: "create_failed" });
+            importResponse = await targetClient.patch(
+              `/items/${collectionName}/${sourceIdStr}`,
+              cleanItem,
+            );
+            action = "updated";
+          } catch (updateErr: any) {
+            // If both fail, try plain create without ID
+            logStep("item_create_without_id_fallback", { 
               sourceId: sourceIdStr, 
               collectionName, 
-              error: createWithIdErr?.message 
+              createError: createErr?.message,
+              updateError: updateErr?.message
             });
             importResponse = await targetClient.post(`/items/${collectionName}`, cleanItem);
             action = "created";
@@ -524,16 +512,11 @@ export async function importFromDirectus(
       successCount,
       errorCount,
       collectionName,
-      titleFilter: options?.titleFilter,
     });
-
-    const filterMessage = options?.titleFilter && options.titleFilter.trim() 
-      ? ` (filtered by title: '${options.titleFilter.trim()}')` 
-      : '';
       
     return {
       success: true,
-      message: `Successfully imported ${successCount} items from ${collectionName}${filterMessage} (${errorCount} failed)`,
+      message: `Successfully imported ${successCount} items from ${collectionName} (${errorCount} failed)`,
       importedItems,
       importLog,
     };

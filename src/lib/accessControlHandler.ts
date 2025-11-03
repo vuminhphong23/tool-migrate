@@ -88,29 +88,39 @@ export async function fetchAccessControlData(
 }> {
   try {
     const client = new DirectusClient(baseUrl, token);
-
-    console.log('🔍 Fetching access control data...');
     
-    const [rolesResponse, policiesResponse, permissionsResponse] = await Promise.all([
+    // Fetch basic data first
+    const [rolesResponse, policiesResponse, permissionsResponse, accessResponse] = await Promise.all([
       client.get('/roles', { params: { limit: -1 } }),
       client.get('/policies', { params: { limit: -1 } }),
-      client.get('/permissions', { params: { limit: -1 } })
+      client.get('/permissions', { params: { limit: -1 } }),
+      client.get('/access', { params: { limit: -1 } }).catch(() => ({ data: [] })) // Fetch role-policy relationships
     ]);
 
     const roles = rolesResponse.data || rolesResponse || [];
     const policies = policiesResponse.data || policiesResponse || [];
     const permissions = permissionsResponse.data || permissionsResponse || [];
+    const accessRelations = accessResponse.data || accessResponse || [];
 
-    console.log(`✅ Fetched ${roles.length} roles, ${policies.length} policies, ${permissions.length} permissions`);
+    // Map access relationships to roles (add policies array to each role)
+    const rolesWithPolicies = roles.map((role: any) => {
+      const rolePolicies = accessRelations
+        .filter((access: any) => access.role === role.id)
+        .map((access: any) => access.policy);
+      
+      return {
+        ...role,
+        policies: rolePolicies
+      };
+    });
 
     return {
       success: true,
-      roles,
+      roles: rolesWithPolicies,
       policies,
       permissions
     };
   } catch (error: any) {
-    console.error('❌ Failed to fetch access control data:', error);
     return {
       success: false,
       error: error.message || 'Failed to fetch access control data'
@@ -182,10 +192,7 @@ export async function importAccessControlData(
     const importedPolicies: any[] = [];
     const importedPermissions: any[] = [];
 
-    console.log('🚀 Starting access control migration...');
-
     // Load existing data from target for comparison
-    console.log('📋 Loading existing target data...');
     const [targetRolesRes, targetPoliciesRes, targetPermissionsRes] = await Promise.all([
       client.get('/roles').catch(() => ({ data: [] })),
       client.get('/policies').catch(() => ({ data: [] })),
@@ -197,15 +204,13 @@ export async function importAccessControlData(
     const existingPermissions = targetPermissionsRes.data || [];
 
     // Step 1: Import Roles
-    console.log('📋 Importing roles...');
     for (const role of sourceRoles) {
       try {
         if (options?.roles?.skipAdminRoles && role.admin_access) {
-          console.log(`⏭️ Skipping admin role: ${role.name}`);
           continue;
         }
 
-        const { users, ...cleanRole } = role; // Keep policies, remove only users
+        const { users, policies, ...cleanRole } = role; // Remove users and policies arrays - they're managed via directus_access junction table
         
         // Check if role already exists in target
         const existingRole = existingRoles.find((r: any) => r.id === role.id);
@@ -215,13 +220,11 @@ export async function importAccessControlData(
         
         if (existingRole && options?.roles?.preserveIds) {
           // Role exists and we want to preserve IDs -> PATCH
-          console.log(`🔄 Updating existing role: ${role.name} (${role.id})`);
           const { id, ...roleToUpdate } = cleanRole; // Remove ID from body for PATCH
           response = await client.patch(`/roles/${role.id}`, roleToUpdate);
           importedId = role.id; // Keep original ID
         } else {
           // Role doesn't exist or we don't preserve IDs -> POST
-          console.log(`➕ Creating new role: ${role.name}`);
           const roleToImport = {
             ...cleanRole,
             id: options?.roles?.preserveIds ? role.id : undefined
@@ -236,10 +239,7 @@ export async function importAccessControlData(
           name: role.name,
           status: 'success'
         });
-
-        console.log(`✅ Imported role: ${role.name} (${role.id} → ${importedId})`);
       } catch (error: any) {
-        console.error(`❌ Failed to import role ${role.name}:`, error.message);
         importedRoles.push({
           originalId: role.id,
           newId: '',
@@ -251,15 +251,13 @@ export async function importAccessControlData(
     }
 
     // Step 2: Import Policies
-    console.log('🔐 Importing policies...');
     for (const policy of sourcePolicies) {
       try {
         if (options?.policies?.skipAdminPolicies && policy.admin_access) {
-          console.log(`⏭️ Skipping admin policy: ${policy.name}`);
           continue;
         }
 
-        const { users, ...cleanPolicy } = policy; // Keep permissions and roles relationships, remove only users
+        const { users, roles, permissions, ...cleanPolicy } = policy; // Remove users, roles, and permissions arrays - they're managed via junction tables
         
         // Check if policy already exists in target
         const existingPolicy = existingPolicies.find((p: any) => p.id === policy.id);
@@ -269,7 +267,6 @@ export async function importAccessControlData(
         
         if (existingPolicy && options?.policies?.preserveIds) {
           // Policy exists and we want to preserve IDs -> PATCH
-          console.log(`🔄 Updating existing policy: ${policy.name} (${policy.id})`);
           const { id, ...policyToUpdate } = {
             ...cleanPolicy,
             ip_access: policy.ip_access || null
@@ -278,7 +275,6 @@ export async function importAccessControlData(
           importedId = policy.id; // Keep original ID
         } else {
           // Policy doesn't exist or we don't preserve IDs -> POST
-          console.log(`➕ Creating new policy: ${policy.name}`);
           const policyToImport = {
             ...cleanPolicy,
             id: options?.policies?.preserveIds ? policy.id : undefined,
@@ -294,10 +290,7 @@ export async function importAccessControlData(
           name: policy.name,
           status: 'success'
         });
-
-        console.log(`✅ Imported policy: ${policy.name} (${policy.id} → ${importedId})`);
       } catch (error: any) {
-        console.error(`❌ Failed to import policy ${policy.name}:`, error.message);
         importedPolicies.push({
           originalId: policy.id,
           newId: '',
@@ -309,14 +302,30 @@ export async function importAccessControlData(
     }
 
     // Step 3: Import Permissions (simplified - create new IDs)
-    console.log('🔑 Importing permissions...');
     let successfulPermissions = 0;
     
     for (const permission of sourcePermissions) {
       try {
         if (options?.permissions?.skipInvalidPermissions && !permission.policy) {
-          console.log(`⏭️ Skipping permission without policy: ${permission.collection}.${permission.action}`);
           continue;
+        }
+
+        // Verify that the policy exists in target (either pre-existing or just imported)
+        if (permission.policy) {
+          const policyExists = existingPolicies.some((p: any) => p.id === permission.policy) ||
+                              importedPolicies.some(p => p.originalId === permission.policy && p.status === 'success');
+          
+          if (!policyExists) {
+            importedPermissions.push({
+              originalId: permission.id,
+              newId: 0,
+              collection: permission.collection,
+              action: permission.action,
+              status: 'skipped',
+              error: `Policy ${permission.policy} not found in target`
+            });
+            continue;
+          }
         }
 
         // Check if permission already exists in target (by collection + action + policy)
@@ -331,18 +340,32 @@ export async function importAccessControlData(
         
         if (existingPermission) {
           // Permission exists -> PATCH
-          console.log(`🔄 Updating existing permission: ${permission.collection}.${permission.action} (${existingPermission.id})`);
-          const { id, ...permissionToUpdate } = permission;
-          response = await client.patch(`/permissions/${existingPermission.id}`, permissionToUpdate);
+          // Clean permission data - remove id and any system fields
+          const cleanPermission = {
+            policy: permission.policy,
+            collection: permission.collection,
+            action: permission.action,
+            permissions: permission.permissions || null,
+            validation: permission.validation || null,
+            presets: permission.presets || null,
+            fields: permission.fields || null
+          };
+          
+          response = await client.patch(`/permissions/${existingPermission.id}`, cleanPermission);
           importedId = existingPermission.id; // Keep existing ID
         } else {
           // Permission doesn't exist -> POST
-          console.log(`➕ Creating new permission: ${permission.collection}.${permission.action}`);
-          const { id, ...cleanPermission } = permission;
+          // Clean permission data - only include allowed fields
           const permissionToImport = {
-            ...cleanPermission,
-            // Note: We create new permission IDs to avoid conflicts
+            policy: permission.policy,
+            collection: permission.collection,
+            action: permission.action,
+            permissions: permission.permissions || null,
+            validation: permission.validation || null,
+            presets: permission.presets || null,
+            fields: permission.fields || null
           };
+          
           response = await client.post('/permissions', permissionToImport);
           importedId = response.data?.id || response.id;
         }
@@ -356,12 +379,7 @@ export async function importAccessControlData(
         });
 
         successfulPermissions++;
-        
-        if (successfulPermissions % 10 === 0) {
-          console.log(`📊 Imported ${successfulPermissions}/${sourcePermissions.length} permissions...`);
-        }
       } catch (error: any) {
-        console.error(`❌ Failed to import permission ${permission.collection}.${permission.action}:`, error.message);
         importedPermissions.push({
           originalId: permission.id,
           newId: 0,
@@ -373,22 +391,80 @@ export async function importAccessControlData(
       }
     }
 
+    // Step 4: Import Role-Policy Relationships (directus_access)
+    const importedAccess: any[] = [];
+    let successfulAccess = 0;
+    
+    // Fetch existing access relationships from target
+    const targetAccessRes = await client.get('/access').catch(() => ({ data: [] }));
+    const existingAccess = targetAccessRes.data || [];
+    
+    // Build access relationships from source roles that have policies
+    for (const role of sourceRoles) {
+      // Skip if role doesn't have policies array or it's empty
+      if (!role.policies || !Array.isArray(role.policies) || role.policies.length === 0) {
+        continue;
+      }
+      
+      for (const policyId of role.policies) {
+        try {
+          // Check if this role-policy relationship already exists
+          const existingRelation = existingAccess.find((a: any) => 
+            a.role === role.id && a.policy === policyId
+          );
+          
+          if (existingRelation) {
+            successfulAccess++; // Count as successful since it already exists
+            continue;
+          }
+          
+          // Verify that the policy was successfully imported or already exists
+          const policyImported = importedPolicies.find(p => p.originalId === policyId && p.status === 'success');
+          const policyExistsInTarget = existingPolicies.some((p: any) => p.id === policyId);
+          
+          if (!policyImported && !policyExistsInTarget) {
+            continue;
+          }
+          
+          // Create new access relationship
+          const accessData = {
+            role: role.id,
+            policy: policyId,
+            sort: null
+          };
+          
+          const response = await client.post('/access', accessData);
+          
+          importedAccess.push({
+            role: role.id,
+            policy: policyId,
+            status: 'success'
+          });
+          
+          successfulAccess++;
+        } catch (error: any) {
+          importedAccess.push({
+            role: role.id,
+            policy: policyId,
+            status: 'error',
+            error: error.message
+          });
+        }
+      }
+    }
+
     const successfulRoles = importedRoles.filter(r => r.status === 'success').length;
     const successfulPolicies = importedPolicies.filter(p => p.status === 'success').length;
 
-    console.log('🎉 Access control migration completed!');
-    console.log(`📊 Results: ${successfulRoles}/${sourceRoles.length} roles, ${successfulPolicies}/${sourcePolicies.length} policies, ${successfulPermissions}/${sourcePermissions.length} permissions`);
-
     return {
       success: true,
-      message: `Successfully imported ${successfulRoles} roles, ${successfulPolicies} policies, and ${successfulPermissions} permissions`,
+      message: `Successfully imported ${successfulRoles} roles, ${successfulPolicies} policies, ${successfulPermissions} permissions, and ${successfulAccess} access relationships`,
       importedRoles,
       importedPolicies,
       importedPermissions
     };
 
   } catch (error: any) {
-    console.error('💥 Access control migration failed:', error);
     return {
       success: false,
       message: `Access control migration failed: ${error.message}`

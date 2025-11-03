@@ -68,7 +68,6 @@ export async function testDirectusConnection(
       };
     }
   } catch (error: any) {
-    console.error('Connection test failed:', error);
     
     // Handle different types of errors
     if (error.response) {
