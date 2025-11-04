@@ -68,7 +68,7 @@ export function ItemSelectorModal({
           type="button"
           onClick={() => !disabled && setOpen(!open)}
           onBlur={(e) => {
-            // close when focus leaves the control
+            // close when focus leaves the control z
             if (!e.currentTarget.contains(e.relatedTarget as Node))
               setOpen(false);
           }}
