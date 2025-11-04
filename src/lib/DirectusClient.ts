@@ -139,6 +139,36 @@ export class DirectusClient {
     return this.request(url, { method: 'GET' });
   }
 
+  /**
+   * Download file as Blob (for file migration)
+   */
+  async getBlob(endpoint: string): Promise<Blob> {
+    const url = `${this.baseUrl}${endpoint}`;
+    
+    const headers: Record<string, string> = {};
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(`HTTP ${response.status}: ${response.statusText}`) as any;
+      error.response = {
+        status: response.status,
+        statusText: response.statusText,
+        data: errorData,
+      };
+      throw error;
+    }
+
+    return response.blob();
+  }
+
   async post(endpoint: string, data?: any, options: RequestInit = {}): Promise<any> {
     const config: RequestInit = {
       method: 'POST',

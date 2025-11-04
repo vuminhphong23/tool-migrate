@@ -6,7 +6,9 @@
 export interface CollectionDependency {
   collection: string;
   dependsOn: string[]; // Collections that must be migrated first
-  requiredBy: string[]; // Collections that require this one
+  requiredBy: string[]; // Collections that require this one (same as dependedBy)
+  dependedBy: string[]; // Collections that depend on this collection
+  level: number; // Migration order level (0 = no dependencies, can go first)
 }
 
 export interface DependencyGraph {
@@ -17,6 +19,9 @@ export interface MigrationOrder {
   order: string[];
   cycles: string[][];
   warnings: string[];
+  collections: string[]; // Alias for order
+  levels: Map<number, string[]>; // Group collections by level
+  dependencies: Map<string, CollectionDependency>;
 }
 
 /**
@@ -40,7 +45,9 @@ export function analyzeDependencies(relations: any[]): DependencyGraph {
     graph[collection] = {
       collection,
       dependsOn: [],
-      requiredBy: []
+      requiredBy: [],
+      dependedBy: [],
+      level: 0
     };
   });
 
@@ -72,6 +79,10 @@ export function analyzeDependencies(relations: any[]): DependencyGraph {
       if (!graph[targetCollection].requiredBy.includes(sourceCollection)) {
         graph[targetCollection].requiredBy.push(sourceCollection);
       }
+      // Also populate dependedBy (alias for requiredBy)
+      if (!graph[targetCollection].dependedBy.includes(sourceCollection)) {
+        graph[targetCollection].dependedBy.push(sourceCollection);
+      }
     }
   });
 
@@ -102,7 +113,9 @@ export function calculateMigrationOrder(graph: DependencyGraph, selectedCollecti
       filteredGraph[collection] = {
         collection,
         dependsOn: [],
-        requiredBy: []
+        requiredBy: [],
+        dependedBy: [],
+        level: 0
       };
     }
   });
@@ -181,11 +194,85 @@ export function calculateMigrationOrder(graph: DependencyGraph, selectedCollecti
     }
   });
 
+  // Calculate levels for collections
+  const levels = calculateLevelsFromGraph(filteredGraph, result);
+  
+  // Convert filteredGraph to Map for dependencies
+  const dependenciesMap = new Map<string, CollectionDependency>();
+  Object.entries(filteredGraph).forEach(([key, value]) => {
+    dependenciesMap.set(key, value);
+  });
+
   return {
     order: result,
     cycles,
-    warnings
+    warnings,
+    collections: result, // Alias for order
+    levels,
+    dependencies: dependenciesMap
   };
+}
+
+/**
+ * Calculate migration levels from dependency graph
+ */
+function calculateLevelsFromGraph(
+  graph: DependencyGraph,
+  order: string[]
+): Map<number, string[]> {
+  const levels = new Map<number, string[]>();
+  const collectionLevels = new Map<string, number>();
+
+  function calculateLevel(collection: string, visited = new Set<string>()): number {
+    if (collectionLevels.has(collection)) {
+      return collectionLevels.get(collection)!;
+    }
+
+    if (visited.has(collection)) {
+      // Circular dependency - assign level 0
+      return 0;
+    }
+
+    visited.add(collection);
+    const deps = graph[collection]?.dependsOn || [];
+    
+    if (deps.length === 0) {
+      collectionLevels.set(collection, 0);
+      if (graph[collection]) {
+        graph[collection].level = 0;
+      }
+      return 0;
+    }
+
+    let maxDepLevel = -1;
+    for (const dep of deps) {
+      const depLevel = calculateLevel(dep, new Set(visited));
+      maxDepLevel = Math.max(maxDepLevel, depLevel);
+    }
+
+    const level = maxDepLevel + 1;
+    collectionLevels.set(collection, level);
+    if (graph[collection]) {
+      graph[collection].level = level;
+    }
+    
+    return level;
+  }
+
+  // Calculate level for each collection in order
+  order.forEach(collection => {
+    calculateLevel(collection);
+  });
+
+  // Group collections by level
+  collectionLevels.forEach((level, collection) => {
+    if (!levels.has(level)) {
+      levels.set(level, []);
+    }
+    levels.get(level)!.push(collection);
+  });
+
+  return levels;
 }
 
 /**
@@ -256,4 +343,204 @@ export function validateCustomOrder(graph: DependencyGraph, order: string[]): { 
     valid: errors.length === 0,
     errors
   };
+}
+
+/**
+ * Analyze collection dependencies from schema relations
+ * Alternative implementation using Map instead of graph object
+ */
+export function analyzeCollectionDependencies(
+  collections: any[],
+  relations: any[]
+): MigrationOrder {
+  const dependencyMap = new Map<string, CollectionDependency>();
+  
+  // Initialize dependency map for all collections
+  collections.forEach(col => {
+    const collectionName = col.collection || col;
+    dependencyMap.set(collectionName, {
+      collection: collectionName,
+      dependsOn: [],
+      dependedBy: [],
+      requiredBy: [],
+      level: 0
+    });
+  });
+
+  // Analyze relations to build dependency graph
+  relations.forEach(relation => {
+    const fromCollection = relation.collection;
+    const toCollection = relation.related_collection;
+
+    // Skip if either collection is not in our list
+    if (!dependencyMap.has(fromCollection) || !dependencyMap.has(toCollection)) {
+      return;
+    }
+
+    // Skip self-references
+    if (fromCollection === toCollection) {
+      return;
+    }
+
+    // fromCollection depends on toCollection (has foreign key to it)
+    const fromDep = dependencyMap.get(fromCollection)!;
+    const toDep = dependencyMap.get(toCollection)!;
+
+    if (!fromDep.dependsOn.includes(toCollection)) {
+      fromDep.dependsOn.push(toCollection);
+    }
+
+    if (!toDep.dependedBy.includes(fromCollection)) {
+      toDep.dependedBy.push(fromCollection);
+    }
+    
+    if (!toDep.requiredBy.includes(fromCollection)) {
+      toDep.requiredBy.push(fromCollection);
+    }
+  });
+
+  // Calculate migration levels using topological sort
+  const levels = calculateMigrationLevels(dependencyMap);
+
+  // Sort collections by level
+  const sortedCollections: string[] = [];
+  const levelNumbers = Array.from(levels.keys()).sort((a, b) => a - b);
+  
+  for (const level of levelNumbers) {
+    const collectionsAtLevel = levels.get(level) || [];
+    sortedCollections.push(...collectionsAtLevel);
+  }
+
+  return {
+    order: sortedCollections,
+    cycles: [],
+    warnings: [],
+    collections: sortedCollections,
+    levels,
+    dependencies: dependencyMap
+  };
+}
+
+/**
+ * Calculate migration levels using topological sort
+ * Level 0 = no dependencies (can migrate first)
+ * Level 1 = depends only on level 0
+ * Level 2 = depends on level 0 or 1, etc.
+ */
+function calculateMigrationLevels(
+  dependencyMap: Map<string, CollectionDependency>
+): Map<number, string[]> {
+  const levels = new Map<number, string[]>();
+  const collectionLevels = new Map<string, number>();
+  const visiting = new Set<string>();
+
+  function visit(collection: string): number {
+    if (collectionLevels.has(collection)) {
+      return collectionLevels.get(collection)!;
+    }
+
+    if (visiting.has(collection)) {
+      // Circular dependency detected - assign to level 0
+      console.warn(`Circular dependency detected for ${collection}`);
+      return 0;
+    }
+
+    visiting.add(collection);
+    const dep = dependencyMap.get(collection);
+    
+    if (!dep || dep.dependsOn.length === 0) {
+      // No dependencies - level 0
+      collectionLevels.set(collection, 0);
+      visiting.delete(collection);
+      return 0;
+    }
+
+    // Calculate level based on dependencies
+    let maxDepLevel = -1;
+    for (const depCollection of dep.dependsOn) {
+      const depLevel = visit(depCollection);
+      maxDepLevel = Math.max(maxDepLevel, depLevel);
+    }
+
+    const level = maxDepLevel + 1;
+    collectionLevels.set(collection, level);
+    dep.level = level;
+    
+    visiting.delete(collection);
+    
+    return level;
+  }
+
+  // Visit all collections
+  for (const collection of dependencyMap.keys()) {
+    visit(collection);
+  }
+
+  // Group collections by level
+  for (const [collection, level] of collectionLevels.entries()) {
+    if (!levels.has(level)) {
+      levels.set(level, []);
+    }
+    levels.get(level)!.push(collection);
+  }
+
+  return levels;
+}
+
+/**
+ * Get suggested migration order as a simple array
+ */
+export function getSuggestedMigrationOrder(
+  collections: any[],
+  relations: any[]
+): string[] {
+  const analysis = analyzeCollectionDependencies(collections, relations);
+  return analysis.collections;
+}
+
+/**
+ * Check if a collection can be migrated given already migrated collections
+ */
+export function canMigrateCollection(
+  collection: string,
+  alreadyMigrated: string[],
+  dependencies: Map<string, CollectionDependency>
+): boolean {
+  const dep = dependencies.get(collection);
+  if (!dep) return true;
+
+  // Check if all dependencies are already migrated
+  return dep.dependsOn.every(depCol => alreadyMigrated.includes(depCol));
+}
+
+/**
+ * Get next collections that can be migrated
+ */
+export function getNextMigratableCollections(
+  remainingCollections: string[],
+  alreadyMigrated: string[],
+  dependencies: Map<string, CollectionDependency>
+): string[] {
+  return remainingCollections.filter(col => 
+    canMigrateCollection(col, alreadyMigrated, dependencies)
+  );
+}
+
+/**
+ * Format dependency info for display
+ */
+export function formatDependencyInfo(dep: CollectionDependency): string {
+  const parts: string[] = [];
+  
+  if (dep.dependsOn.length > 0) {
+    parts.push(`Depends on: ${dep.dependsOn.join(', ')}`);
+  }
+  
+  if (dep.dependedBy.length > 0) {
+    parts.push(`Required by: ${dep.dependedBy.join(', ')}`);
+  }
+  
+  parts.push(`Level: ${dep.level}`);
+  
+  return parts.join(' | ');
 }
