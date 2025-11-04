@@ -3,7 +3,9 @@ import { importFromDirectus } from '../lib/apiHandlers'
 import { FlowsManager } from './FlowsManager'
 import { AccessControlManager } from './AccessControlManager'
 import { DocumentationTab } from './DocumentationTab'
+import { BatchMigrationModal } from './BatchMigrationModal'
 import type { Collection, OperationStatus } from '../types'
+import { analyzeDependencies, calculateMigrationOrder, validateCustomOrder, type DependencyGraph, type MigrationOrder } from '../lib/dependencyAnalyzer'
 
 interface CollectionListProps {
   collections: Collection[]
@@ -50,6 +52,20 @@ export function CollectionList({
   const [importProgress, setImportProgress] = useState<Record<string, { current: number; total: number }>>({})
   const [selectedSchemaCollections, setSelectedSchemaCollections] = useState<string[]>([])
   const [schemaCollectionFilter, setSchemaCollectionFilter] = useState<string>('')
+  const [collapsedFieldDetails, setCollapsedFieldDetails] = useState<Record<string, boolean>>({})
+  
+  // Batch Migration State
+  const [showBatchMigrationModal, setShowBatchMigrationModal] = useState(false)
+  const [dependencyGraph, setDependencyGraph] = useState<DependencyGraph | null>(null)
+  const [migrationOrder, setMigrationOrder] = useState<MigrationOrder | null>(null)
+  const [customOrder, setCustomOrder] = useState<string[]>([])
+  const [batchMigrationProgress, setBatchMigrationProgress] = useState<{
+    current: number;
+    total: number;
+    currentCollection: string;
+    status: 'idle' | 'running' | 'completed' | 'failed';
+    results: Array<{ collection: string; success: boolean; message: string }>;
+  }>({ current: 0, total: 0, currentCollection: '', status: 'idle', results: [] })
   // Load target collections for comparison
   const loadTargetCollections = async () => {
     try {
@@ -166,6 +182,8 @@ export function CollectionList({
   const handleSchemaDiff = async () => {
     if (!schemaSnapshot) return;
     
+    console.log('\n\n🚀🚀🚀 ===== SCHEMA DIFF STARTED - CODE VERSION: 2024-11-04 =====  🚀🚀🚀\n');
+    
     setSchemaMigrationStep('diff');
     setLoading('schema_diff', true);
     
@@ -272,32 +290,51 @@ export function CollectionList({
           const sourceMeta = sourceField.meta || {};
           const targetMeta = targetField.meta || {};
           
-          // Compare metadata properties, using JSON stringify for nested objects
-          const metaChanged = 
-            sourceMeta.required !== targetMeta.required ||
-            sourceMeta.readonly !== targetMeta.readonly ||
-            sourceMeta.hidden !== targetMeta.hidden ||
-            sourceMeta.interface !== targetMeta.interface ||
-            JSON.stringify(sourceMeta.options) !== JSON.stringify(targetMeta.options) ||
-            sourceMeta.display !== targetMeta.display ||
-            JSON.stringify(sourceMeta.display_options) !== JSON.stringify(targetMeta.display_options) ||
-            sourceMeta.note !== targetMeta.note ||
-            sourceMeta.special !== targetMeta.special ||
-            sourceMeta.validation !== targetMeta.validation ||
-            sourceMeta.validation_message !== targetMeta.validation_message;
+          // Build detailed list of differences
+          const differences: string[] = [];
+          if (sourceMeta.required !== targetMeta.required) {
+            differences.push(`required: ${targetMeta.required} → ${sourceMeta.required}`);
+          }
+          if (sourceMeta.readonly !== targetMeta.readonly) {
+            differences.push(`readonly: ${targetMeta.readonly} → ${sourceMeta.readonly}`);
+          }
+          if (sourceMeta.hidden !== targetMeta.hidden) {
+            differences.push(`hidden: ${targetMeta.hidden} → ${sourceMeta.hidden}`);
+          }
+          if (sourceMeta.interface !== targetMeta.interface) {
+            differences.push(`interface: ${targetMeta.interface} → ${sourceMeta.interface}`);
+          }
+          if (JSON.stringify(sourceMeta.options) !== JSON.stringify(targetMeta.options)) {
+            differences.push(`options: ${JSON.stringify(targetMeta.options)} → ${JSON.stringify(sourceMeta.options)}`);
+          }
+          if (sourceMeta.display !== targetMeta.display) {
+            differences.push(`display: ${targetMeta.display} → ${sourceMeta.display}`);
+          }
+          if (JSON.stringify(sourceMeta.display_options) !== JSON.stringify(targetMeta.display_options)) {
+            differences.push(`display_options: ${JSON.stringify(targetMeta.display_options)} → ${JSON.stringify(sourceMeta.display_options)}`);
+          }
+          if (sourceMeta.note !== targetMeta.note) {
+            differences.push(`note: ${targetMeta.note} → ${sourceMeta.note}`);
+          }
+          if (sourceMeta.special !== targetMeta.special) {
+            differences.push(`special: ${targetMeta.special} → ${sourceMeta.special}`);
+          }
+          if (sourceMeta.validation !== targetMeta.validation) {
+            differences.push(`validation: ${targetMeta.validation} → ${sourceMeta.validation}`);
+          }
+          if (sourceMeta.validation_message !== targetMeta.validation_message) {
+            differences.push(`validation_message: ${targetMeta.validation_message} → ${sourceMeta.validation_message}`);
+          }
+          
+          const metaChanged = differences.length > 0;
           
           if (metaChanged) {
-            console.log(`  ✓ Metadata difference found: ${fieldKey}`, {
-              source: {
-                required: sourceMeta.required,
-                readonly: sourceMeta.readonly,
-                hidden: sourceMeta.hidden
-              },
-              target: {
-                required: targetMeta.required,
-                readonly: targetMeta.readonly,
-                hidden: targetMeta.hidden
-              }
+            console.log(`  ✓ Metadata difference found: ${fieldKey}`);
+            console.log(`    Differences (${differences.length}):`);
+            differences.forEach(diff => console.log(`      - ${diff}`));
+            console.log(`    Full comparison:`, {
+              source: sourceMeta,
+              target: targetMeta
             });
             
             // Check if this field is already in the diff
@@ -306,7 +343,7 @@ export function CollectionList({
             );
             
             if (!existingInDiff) {
-              // Add to metadata-only changes
+              // Add to metadata-only changes with detailed diff info
               metadataOnlyChanges.push({
                 collection: sourceField.collection,
                 field: sourceField.field,
@@ -317,7 +354,8 @@ export function CollectionList({
                   kind: 'E', // Edit
                   path: ['meta'],
                   lhs: targetMeta,
-                  rhs: sourceMeta
+                  rhs: sourceMeta,
+                  differences: differences // Store detailed differences
                 }]
               });
               
@@ -346,6 +384,229 @@ export function CollectionList({
         };
       } else {
         console.log('\n✓ No additional metadata-only changes found');
+      }
+      
+      // DEBUG: Check diff data before filtering
+      console.log('\n🔍 DEBUG: About to filter differences. Current state:', {
+        hasFields: !!(diffData?.diff?.fields),
+        fieldsCount: diffData?.diff?.fields?.length || 0,
+        firstField: diffData?.diff?.fields?.[0],
+        diffDataStructure: diffData
+      });
+      
+      // FILTER OUT INSIGNIFICANT DIFFERENCES
+      // These are differences caused by different database engines, not actual schema differences
+      console.log('\n🧹 Filtering out insignificant differences...');
+      console.log('   Starting with', diffData?.diff?.fields?.length || 0, 'field differences');
+      
+      const isInsignificantDiff = (diffItem: any): boolean => {
+        const path = diffItem.path?.join('.') || '';
+        const pathArray = diffItem.path || [];
+        
+        // METADATA FILTER: Ignore all metadata-only changes
+        // Metadata changes cannot be applied via /schema/apply API anyway
+        // Only keep schema structure changes (data_type, nullable, etc.)
+        
+        // Filter 1: Ignore all 'meta' object changes
+        if (pathArray[0] === 'meta') {
+          console.log(`  ⏭️  Ignoring metadata change: ${path} (metadata-only)`);
+          return true;
+        }
+        
+        // Filter 2: Ignore top-level Directus field metadata that doesn't affect data structure
+        const metadataOnlyFields = [
+          'collection', 'field', 'type', // Identifiers (shouldn't change)
+          'note', 'sort', 'group', 'hidden', 'readonly', 'required', // UI metadata
+          'interface', 'display', 'options', 'display_options', // UI configuration
+          'validation', 'validation_message', 'conditions', // Validation rules
+          'translations', 'special' // Other metadata
+        ];
+        
+        if (pathArray.length === 1 && metadataOnlyFields.includes(pathArray[0])) {
+          console.log(`  ⏭️  Ignoring field metadata: ${path} (UI configuration)`);
+          return true;
+        }
+        
+        // 1. Ignore varchar vs character varying (same type, different DB names)
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          const normalized_lhs = lhs === 'varchar' ? 'character varying' : lhs === 'character varying' ? 'varchar' : lhs;
+          const normalized_rhs = rhs === 'varchar' ? 'character varying' : rhs === 'character varying' ? 'varchar' : rhs;
+          if (normalized_lhs === normalized_rhs || 
+              (lhs === 'varchar' && rhs === 'character varying') || 
+              (lhs === 'character varying' && rhs === 'varchar')) {
+            console.log(`  ⏭️  Ignoring data_type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 2. Ignore numeric_precision and numeric_scale differences when one is null
+        // These are metadata differences between DB engines that don't affect functionality
+        if (path === 'schema.numeric_precision' || path === 'schema.numeric_scale') {
+          if (diffItem.lhs === null || diffItem.rhs === null) {
+            console.log(`  ⏭️  Ignoring ${path}: ${diffItem.lhs} ↔ ${diffItem.rhs} (DB engine metadata difference)`);
+            return true;
+          }
+        }
+        
+        // 3. Ignore datetime vs timestamp (same type, different DB names)
+        // MySQL/SQLite: datetime, PostgreSQL: timestamp/timestamp with time zone
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          const datetimeTypes = ['datetime', 'timestamp', 'timestamp with time zone', 'timestamp without time zone'];
+          if (datetimeTypes.includes(lhs) && datetimeTypes.includes(rhs)) {
+            console.log(`  ⏭️  Ignoring datetime type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 4. Ignore text vs varchar (when max_length is large or null)
+        // These are essentially the same for large text fields
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          if ((lhs === 'text' && rhs === 'varchar') || (lhs === 'varchar' && rhs === 'text')) {
+            console.log(`  ⏭️  Ignoring text/varchar difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 5. Ignore integer type variations (int, integer, bigint when they're equivalent)
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          // int, integer, int4 are all same in PostgreSQL
+          const intTypes = ['int', 'integer', 'int4'];
+          if (intTypes.includes(lhs) && intTypes.includes(rhs)) {
+            console.log(`  ⏭️  Ignoring integer type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 6. Ignore boolean type variations
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          const boolTypes = ['boolean', 'bool', 'tinyint'];
+          if (boolTypes.includes(lhs) && boolTypes.includes(rhs)) {
+            console.log(`  ⏭️  Ignoring boolean type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 7. Ignore json vs jsonb (PostgreSQL specific)
+        if (path === 'schema.data_type') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          if ((lhs === 'json' && rhs === 'jsonb') || (lhs === 'jsonb' && rhs === 'json')) {
+            console.log(`  ⏭️  Ignoring json type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        // 8. Ignore top-level dateTime field differences (Directus field type metadata)
+        // This handles path like ['dateTime'] instead of ['schema', 'data_type']
+        if (path === 'dateTime') {
+          const lhs = diffItem.lhs;
+          const rhs = diffItem.rhs;
+          const datetimeTypes = ['dateTime', 'timestamp', 'timestamp with time zone', 'timestamp without time zone'];
+          if (datetimeTypes.includes(lhs) && datetimeTypes.includes(rhs)) {
+            console.log(`  ⏭️  Ignoring dateTime metadata: ${lhs} ↔ ${rhs} (equivalent types)`);
+            return true;
+          }
+        }
+        
+        return false;
+      };
+      
+      // Check if a field's diffs are all UUID-related (char(36) <-> uuid normalization)
+      const isUUIDNormalization = (fieldDiffs: any[]): boolean => {
+        if (!fieldDiffs || fieldDiffs.length === 0) return false;
+        
+        // Check if this is a UUID field normalization scenario:
+        // - type: string <-> uuid
+        // - schema.data_type: char <-> uuid
+        // - schema.max_length: 36 <-> null
+        
+        const hasTypeStringUuid = fieldDiffs.some((d: any) => 
+          d.path?.join('.') === 'type' && 
+          ((d.lhs === 'string' && d.rhs === 'uuid') || (d.lhs === 'uuid' && d.rhs === 'string'))
+        );
+        
+        const hasDataTypeCharUuid = fieldDiffs.some((d: any) => 
+          d.path?.join('.') === 'schema.data_type' && 
+          ((d.lhs === 'char' && d.rhs === 'uuid') || (d.lhs === 'uuid' && d.rhs === 'char'))
+        );
+        
+        const hasMaxLength36 = fieldDiffs.some((d: any) => 
+          d.path?.join('.') === 'schema.max_length' && 
+          ((d.lhs === 36 && d.rhs === null) || (d.lhs === null && d.rhs === 36))
+        );
+        
+        // If we have the characteristic UUID normalization pattern
+        if (hasTypeStringUuid && hasDataTypeCharUuid) {
+          return true;
+        }
+        
+        return false;
+      };
+      
+      // Filter fields: remove fields where ALL diffs are insignificant
+      if (diffData?.diff?.fields) {
+        const originalFieldsCount = diffData.diff.fields.length;
+        diffData.diff.fields = diffData.diff.fields.filter((field: any) => {
+          if (!field.diff || !Array.isArray(field.diff)) return true;
+          
+          // Check if this is a UUID normalization field (char(36) vs uuid)
+          if (isUUIDNormalization(field.diff)) {
+            console.log(`  🗑️  Removed field ${field.collection}.${field.field} (UUID normalization: char(36) ↔ uuid)`);
+            return false;
+          }
+          
+          // Filter out insignificant diffs from this field
+          const significantDiffs = field.diff.filter((d: any) => !isInsignificantDiff(d));
+          
+          if (significantDiffs.length === 0) {
+            console.log(`  🗑️  Removed field ${field.collection}.${field.field} (all diffs insignificant)`);
+            return false; // Remove this field entirely
+          }
+          
+          // Update field with only significant diffs
+          field.diff = significantDiffs;
+          return true;
+        });
+        
+        const removedCount = originalFieldsCount - diffData.diff.fields.length;
+        console.log(`\n📊 Filtering complete:`, {
+          originalCount: originalFieldsCount,
+          finalCount: diffData.diff.fields.length,
+          removedCount: removedCount
+        });
+        if (removedCount > 0) {
+          console.log(`✅ Filtered out ${removedCount} field(s) with insignificant differences`);
+        } else {
+          console.log(`ℹ️ No fields were filtered (all differences are significant)`);
+        }
+      }
+      
+      // Filter collections: remove directus_sync_id_map and other internal collections
+      if (diffData?.diff?.collections) {
+        const originalCollectionsCount = diffData.diff.collections.length;
+        diffData.diff.collections = diffData.diff.collections.filter((col: any) => {
+          // Remove directus system collections that might appear in diff
+          if (col.collection?.startsWith('directus_')) {
+            console.log(`  🗑️  Removed system collection: ${col.collection}`);
+            return false;
+          }
+          return true;
+        });
+        
+        const removedCount = originalCollectionsCount - diffData.diff.collections.length;
+        if (removedCount > 0) {
+          console.log(`\n✅ Filtered out ${removedCount} system collection(s)`);
+        }
       }
       
       // Log the full diff response for debugging
@@ -644,6 +905,15 @@ export function CollectionList({
               // Sanitize field items - only keep allowed properties
               // Remove properties like 'type', 'schema', 'meta' that are not allowed in the payload
               const { type, schema, meta, ...sanitizedField } = field;
+              
+              // Also sanitize the diff array - remove 'differences' property from each diff item
+              if (sanitizedField.diff && Array.isArray(sanitizedField.diff)) {
+                sanitizedField.diff = sanitizedField.diff.map((diffItem: any) => {
+                  const { differences, ...sanitizedDiffItem } = diffItem;
+                  return sanitizedDiffItem;
+                });
+              }
+              
               return sanitizedField;
             }),
           relations: (schemaDiff.diff.relations || []).filter((rel: any) => {
@@ -766,6 +1036,10 @@ export function CollectionList({
     
     // Group fields by collection with parsed diff info
     const fieldsByCollection: Record<string, any[]> = {};
+    
+    console.log('\n🔍 ANALYZING SCHEMA DIFFERENCES - Field Level Analysis:');
+    console.log('═══════════════════════════════════════════════════════');
+    
     (diffData.diff.fields || []).forEach((fieldItem: any) => {
       const collectionName = fieldItem.collection;
       if (!fieldsByCollection[collectionName]) {
@@ -776,27 +1050,64 @@ export function CollectionList({
       const diffArray = fieldItem.diff || [];
       let fieldAction = 'update';
       let fieldData = null;
+      const diffDetails: string[] = [];
       
       diffArray.forEach((diffItem: any) => {
         if (diffItem.kind === 'N') {
           fieldAction = 'create'; // New field
           fieldData = diffItem.rhs; // Right-hand side = new value
+          diffDetails.push(`NEW field - will be created in target`);
         } else if (diffItem.kind === 'D') {
           fieldAction = 'delete'; // Deleted field
           fieldData = diffItem.lhs; // Left-hand side = old value
+          diffDetails.push(`DELETED field - exists in target but removed from source`);
         } else if (diffItem.kind === 'E') {
           fieldAction = 'update'; // Modified field
           fieldData = diffItem.rhs || fieldItem;
+          
+          // Extract the path to understand what changed
+          const changePath = diffItem.path?.join('.') || 'unknown';
+          const oldValue = diffItem.lhs;
+          const newValue = diffItem.rhs;
+          
+          // Build detailed difference string
+          if (diffItem.differences && Array.isArray(diffItem.differences)) {
+            // Use our custom detailed differences from metadata detection
+            diffDetails.push(...diffItem.differences);
+          } else {
+            // Generic difference logging
+            diffDetails.push(`${changePath}: ${JSON.stringify(oldValue)} → ${JSON.stringify(newValue)}`);
+          }
         }
       });
+      
+      // Log this field's analysis
+      if (fieldAction === 'update' && diffDetails.length > 0) {
+        console.log(`\n📌 ${collectionName}.${fieldItem.field} - MODIFIED`);
+        console.log(`   Reason: Field has different configuration`);
+        console.log(`   Changes detected (${diffDetails.length}):`);
+        diffDetails.forEach((detail, idx) => {
+          console.log(`     ${idx + 1}. ${detail}`);
+        });
+        console.log(`   Full diff structure:`, diffArray);
+      } else if (fieldAction === 'create') {
+        console.log(`\n✨ ${collectionName}.${fieldItem.field} - NEW`);
+        console.log(`   Reason: Field exists in source but not in target`);
+      } else if (fieldAction === 'delete') {
+        console.log(`\n🗑️ ${collectionName}.${fieldItem.field} - DELETED`);
+        console.log(`   Reason: Field exists in target but not in source`);
+      }
       
       fieldsByCollection[collectionName].push({
         ...fieldItem,
         fieldName: fieldItem.field,
         action: fieldAction,
-        data: fieldData
+        data: fieldData,
+        diffDetails: diffDetails
       });
     });
+    
+    console.log('\n═══════════════════════════════════════════════════════');
 
     // Group relations by collection with parsed diff info
     const relationsByCollection: Record<string, any[]> = {};
@@ -1062,6 +1373,178 @@ export function CollectionList({
       }, 1000);
     }
   }
+
+  // Batch Migration Functions
+  const analyzeBatchMigration = async () => {
+    if (selectedCollections.length === 0) {
+      onStatusUpdate({ type: 'error', message: 'Please select at least one collection to analyze' });
+      return;
+    }
+
+    try {
+      // Get schema snapshot if not already available
+      let relations = schemaSnapshot?.relations || [];
+      
+      if (!schemaSnapshot) {
+        onStatusUpdate({ type: 'info', message: 'Fetching schema information...' });
+        const client = await import('../lib/DirectusClient').then(m => m.DirectusClient);
+        const sourceClient = new client(sourceUrl, sourceToken);
+        const response = await sourceClient.get('/schema/snapshot');
+        relations = response.data?.relations || [];
+      }
+
+      // Analyze dependencies
+      const graph = analyzeDependencies(relations);
+      setDependencyGraph(graph);
+
+      // Calculate migration order
+      const order = calculateMigrationOrder(graph, selectedCollections);
+      setMigrationOrder(order);
+      setCustomOrder(order.order);
+
+      // Show modal
+      setShowBatchMigrationModal(true);
+
+      if (order.cycles.length > 0) {
+        onStatusUpdate({ 
+          type: 'warning', 
+          message: `Detected ${order.cycles.length} circular dependencies. Please review the migration order.` 
+        });
+      } else {
+        onStatusUpdate({ 
+          type: 'success', 
+          message: `Migration order calculated for ${order.order.length} collections` 
+        });
+      }
+    } catch (error: any) {
+      onStatusUpdate({ type: 'error', message: `Failed to analyze dependencies: ${error.message}` });
+      logError('analyze_batch_migration', error);
+    }
+  };
+
+  const executeBatchMigration = async () => {
+    if (customOrder.length === 0) {
+      onStatusUpdate({ type: 'error', message: 'No collections to migrate' });
+      return;
+    }
+
+    // Validate custom order if modified
+    if (dependencyGraph) {
+      const validation = validateCustomOrder(dependencyGraph, customOrder);
+      if (!validation.valid) {
+        onStatusUpdate({ 
+          type: 'error', 
+          message: `Invalid migration order: ${validation.errors[0]}. Please reorder collections.` 
+        });
+        return;
+      }
+    }
+
+    setBatchMigrationProgress({
+      current: 0,
+      total: customOrder.length,
+      currentCollection: '',
+      status: 'running',
+      results: []
+    });
+
+    const results: Array<{ collection: string; success: boolean; message: string }> = [];
+
+    for (let i = 0; i < customOrder.length; i++) {
+      const collectionName = customOrder[i];
+      
+      setBatchMigrationProgress(prev => ({
+        ...prev,
+        current: i + 1,
+        currentCollection: collectionName
+      }));
+
+      try {
+        onStatusUpdate({ type: 'info', message: `Migrating ${collectionName} (${i + 1}/${customOrder.length})...` });
+        
+        const result = await importFromDirectus(
+          sourceUrl,
+          sourceToken,
+          targetUrl,
+          targetToken,
+          collectionName,
+          {
+            limit: importLimit || undefined,
+            titleFilter: titleFilter.trim() || undefined,
+            onProgress: (current: number, total: number) => {
+              setImportProgress(prev => ({ ...prev, [collectionName]: { current, total } }))
+            }
+          }
+        );
+
+        if (result.success) {
+          const importedItems = result.importedItems || [];
+          const successful = importedItems.filter(item => item.status !== 'error').length;
+          const failed = importedItems.filter(item => item.status === 'error').length;
+          
+          const message = `${successful} items imported (${failed} failed)`;
+          results.push({ collection: collectionName, success: true, message });
+          
+          onStatusUpdate({
+            type: failed > 0 ? 'warning' : 'success',
+            message: `✓ ${collectionName}: ${message}`
+          });
+        } else {
+          results.push({ collection: collectionName, success: false, message: result.message });
+          onStatusUpdate({
+            type: 'error',
+            message: `✗ ${collectionName}: ${result.message}`
+          });
+        }
+
+        // Small delay between collections
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error: any) {
+        const message = error.message || 'Unknown error';
+        results.push({ collection: collectionName, success: false, message });
+        onStatusUpdate({
+          type: 'error',
+          message: `✗ ${collectionName}: ${message}`
+        });
+        logError(`batch_migration_${collectionName}`, error);
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+
+    setBatchMigrationProgress(prev => ({
+      ...prev,
+      status: 'completed',
+      results
+    }));
+
+    onStatusUpdate({
+      type: successCount === customOrder.length ? 'success' : 'warning',
+      message: `Batch migration completed: ${successCount} successful, ${failCount} failed`
+    });
+  };
+
+  const moveCollectionInOrder = (fromIndex: number, toIndex: number) => {
+    const newOrder = [...customOrder];
+    const [moved] = newOrder.splice(fromIndex, 1);
+    newOrder.splice(toIndex, 0, moved);
+    setCustomOrder(newOrder);
+
+    // Validate new order
+    if (dependencyGraph) {
+      const validation = validateCustomOrder(dependencyGraph, newOrder);
+      if (!validation.valid) {
+        onStatusUpdate({ 
+          type: 'warning', 
+          message: `Warning: ${validation.errors[0]}` 
+        });
+      } else {
+        onStatusUpdate({ type: 'success', message: 'Order updated and validated' });
+      }
+    }
+  };
 
   if (collections.length === 0) {
     return (
@@ -1362,176 +1845,223 @@ export function CollectionList({
                       </span>
                     </h5>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {filteredModifiedCollections.map((col: any) => (
-                        <div key={col.collection} style={{
-                          backgroundColor: 'white',
-                          border: selectedSchemaCollections.includes(col.collection) ? '2px solid #f59e0b' : '1px solid #fde68a',
-                          borderRadius: '6px',
-                          padding: '0.75rem'
-                        }}>
-                          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={selectedSchemaCollections.includes(col.collection)}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedSchemaCollections(prev => [...prev, col.collection]);
-                                } else {
-                                  setSelectedSchemaCollections(prev => prev.filter(c => c !== col.collection));
-                                }
-                              }}
-                              style={{ marginTop: '0.25rem', cursor: 'pointer' }}
-                            />
-                            <div style={{ flex: 1 }}>
-                              <div style={{ fontWeight: '600', color: '#92400e', marginBottom: '0.5rem' }}>
-                                {col.collection}
-                              </div>
-                              
-                              {/* Summary Badge */}
-                              <div style={{ 
-                                display: 'flex', 
-                                gap: '0.5rem', 
-                                marginBottom: '0.5rem',
-                                flexWrap: 'wrap'
-                              }}>
-                                {col.newFieldsCount > 0 && (
-                                  <span style={{
-                                    fontSize: '0.7rem',
-                                    padding: '0.25rem 0.5rem',
-                                    backgroundColor: '#dcfce7',
-                                    color: '#166534',
-                                    borderRadius: '4px',
-                                    fontWeight: '600'
-                                  }}>
-                                    ➕ {col.newFieldsCount} new field{col.newFieldsCount > 1 ? 's' : ''}
-                                  </span>
-                                )}
-                                {col.deletedFieldsCount > 0 && (
-                                  <span style={{
-                                    fontSize: '0.7rem',
-                                    padding: '0.25rem 0.5rem',
-                                    backgroundColor: '#fee2e2',
-                                    color: '#991b1b',
-                                    borderRadius: '4px',
-                                    fontWeight: '600'
-                                  }}>
-                                    ➖ {col.deletedFieldsCount} deleted field{col.deletedFieldsCount > 1 ? 's' : ''}
-                                  </span>
-                                )}
-                                {col.modifiedFieldsCount > 0 && (
-                                  <span style={{
-                                    fontSize: '0.7rem',
-                                    padding: '0.25rem 0.5rem',
-                                    backgroundColor: '#e0e7ff',
-                                    color: '#3730a3',
-                                    borderRadius: '4px',
-                                    fontWeight: '600'
-                                  }}>
-                                    ✏️ {col.modifiedFieldsCount} modified field{col.modifiedFieldsCount > 1 ? 's' : ''}
-                                  </span>
-                                )}
-                              </div>
-                              
-                              {/* Field Changes - Only show fields that are different */}
-                              {col.fieldChanges && col.fieldChanges.length > 0 && (
+                      {filteredModifiedCollections.map((col: any) => {
+                        const isCollapsed = collapsedFieldDetails[col.collection] ?? true;
+                        const hasDetails = col.fieldChanges && col.fieldChanges.length > 0;
+                        
+                        return (
+                          <div key={col.collection} style={{
+                            backgroundColor: 'white',
+                            border: selectedSchemaCollections.includes(col.collection) ? '2px solid #f59e0b' : '1px solid #fde68a',
+                            borderRadius: '6px',
+                            padding: '0.75rem'
+                          }}>
+                            {/* Header with checkbox and collection name */}
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+                              <input
+                                type="checkbox"
+                                checked={selectedSchemaCollections.includes(col.collection)}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  if (e.target.checked) {
+                                    setSelectedSchemaCollections(prev => [...prev, col.collection]);
+                                  } else {
+                                    setSelectedSchemaCollections(prev => prev.filter(c => c !== col.collection));
+                                  }
+                                }}
+                                style={{ marginTop: '0.25rem', cursor: 'pointer' }}
+                              />
+                              <div style={{ flex: 1 }}>
                                 <div style={{ 
-                                  backgroundColor: '#fffbeb', 
-                                  padding: '0.5rem', 
-                                  borderRadius: '4px',
-                                  marginBottom: '0.5rem',
-                                  border: '1px solid #fde68a'
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'space-between',
+                                  marginBottom: '0.5rem'
                                 }}>
-                                  <div style={{ fontSize: '0.8rem', fontWeight: '600', color: '#92400e', marginBottom: '0.5rem' }}>
-                                    📝 Field Details:
+                                  <div style={{ fontWeight: '600', color: '#92400e' }}>
+                                    {col.collection}
                                   </div>
-                                  {col.fieldChanges.map((field: any, idx: number) => (
-                                    <div key={idx} style={{ 
-                                      fontSize: '0.75rem', 
-                                      color: '#78350f',
-                                      marginLeft: '1rem',
-                                      marginBottom: '0.5rem',
-                                      lineHeight: '1.4',
-                                      padding: '0.5rem',
-                                      backgroundColor: field.action === 'create' ? '#f0fdf4' : 
-                                                       field.action === 'delete' ? '#fef2f2' : '#f5f3ff',
-                                      borderLeft: `3px solid ${field.action === 'create' ? '#10b981' : 
-                                                                 field.action === 'delete' ? '#dc2626' : '#6366f1'}`,
-                                      borderRadius: '4px'
-                                    }}>
-                                      <div style={{ marginBottom: '0.25rem' }}>
-                                        <strong style={{ fontSize: '0.85rem' }}>{field.field}</strong> 
-                                        <span style={{ 
-                                          marginLeft: '0.5rem',
-                                          padding: '0.125rem 0.375rem',
-                                          backgroundColor: field.action === 'create' ? '#dcfce7' : 
-                                                          field.action === 'delete' ? '#fee2e2' : '#e0e7ff',
-                                          color: field.action === 'create' ? '#166534' : 
-                                                 field.action === 'delete' ? '#991b1b' : '#3730a3',
-                                          borderRadius: '3px',
-                                          fontSize: '0.7rem',
-                                          fontWeight: '600'
-                                        }}>
-                                          {field.action === 'create' ? '✨ NEW' : 
-                                           field.action === 'delete' ? '🗑️ DELETED' : '✏️ MODIFIED'}
-                                        </span>
-                                        {field.type && <span style={{ marginLeft: '0.5rem', color: '#a16207', fontWeight: '600' }}>({field.type})</span>}
-                                      </div>
-                                      
-                                      {/* Description based on action */}
-                                      <div style={{ fontSize: '0.7rem', color: '#6b7280', marginBottom: '0.25rem', fontStyle: 'italic' }}>
-                                        {field.action === 'create' && '📍 Field exists in source but not in target'}
-                                        {field.action === 'delete' && '📍 Field exists in target but removed from source'}
-                                        {field.action === 'update' && '📍 Field has different configuration between source and target'}
-                                      </div>
-                                      
-                                      {/* Validation info */}
-                                      {field.validation && (
-                                        <div style={{ marginLeft: '1rem', marginTop: '0.25rem', color: '#b45309' }}>
-                                          ✓ Validation: {JSON.stringify(field.validation)}
-                                        </div>
-                                      )}
-                                      
-                                      {/* Constraints info */}
-                                      {field.constraints && (
-                                        <div style={{ marginLeft: '1rem', marginTop: '0.25rem', color: '#92400e', fontSize: '0.7rem' }}>
-                                          {field.constraints.nullable !== undefined && `Nullable: ${field.constraints.nullable}, `}
-                                          {field.constraints.unique && `Unique: ${field.constraints.unique}, `}
-                                          {field.constraints.primaryKey && `Primary Key: ${field.constraints.primaryKey}, `}
-                                          {field.constraints.maxLength && `Max Length: ${field.constraints.maxLength}`}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
+                                  {hasDetails && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCollapsedFieldDetails(prev => ({
+                                          ...prev,
+                                          [col.collection]: !isCollapsed
+                                        }));
+                                      }}
+                                      style={{
+                                        background: 'none',
+                                        border: '1px solid #d97706',
+                                        borderRadius: '4px',
+                                        padding: '0.25rem 0.5rem',
+                                        cursor: 'pointer',
+                                        fontSize: '0.7rem',
+                                        color: '#92400e',
+                                        fontWeight: '600',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.25rem'
+                                      }}
+                                    >
+                                      {isCollapsed ? '▶' : '▼'} {isCollapsed ? 'Show' : 'Hide'} Details
+                                    </button>
+                                  )}
                                 </div>
-                              )}
-                              
-                              {/* Collection-level validation */}
-                              {(col.schema?.validation || col.meta?.validation) && (
+                                
+                                {/* Summary Badge */}
                                 <div style={{ 
-                                  backgroundColor: '#fef3c7', 
-                                  padding: '0.5rem', 
-                                  borderRadius: '4px',
-                                  border: '1px solid #fcd34d',
-                                  fontSize: '0.75rem',
-                                  color: '#92400e'
+                                  display: 'flex', 
+                                  gap: '0.5rem', 
+                                  marginBottom: hasDetails && !isCollapsed ? '0.5rem' : '0',
+                                  flexWrap: 'wrap'
                                 }}>
-                                  <strong>Collection Validation:</strong>
-                                  <pre style={{ margin: '0.25rem 0 0 0', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
-                                    {JSON.stringify(col.schema?.validation || col.meta?.validation, null, 2)}
-                                  </pre>
+                                  {col.newFieldsCount > 0 && (
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      padding: '0.25rem 0.5rem',
+                                      backgroundColor: '#dcfce7',
+                                      color: '#166534',
+                                      borderRadius: '4px',
+                                      fontWeight: '600'
+                                    }}>
+                                      ➕ {col.newFieldsCount} new field{col.newFieldsCount > 1 ? 's' : ''}
+                                    </span>
+                                  )}
+                                  {col.deletedFieldsCount > 0 && (
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      padding: '0.25rem 0.5rem',
+                                      backgroundColor: '#fee2e2',
+                                      color: '#991b1b',
+                                      borderRadius: '4px',
+                                      fontWeight: '600'
+                                    }}>
+                                      ➖ {col.deletedFieldsCount} deleted field{col.deletedFieldsCount > 1 ? 's' : ''}
+                                    </span>
+                                  )}
+                                  {col.modifiedFieldsCount > 0 && (
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      padding: '0.25rem 0.5rem',
+                                      backgroundColor: '#e0e7ff',
+                                      color: '#3730a3',
+                                      borderRadius: '4px',
+                                      fontWeight: '600'
+                                    }}>
+                                      ✏️ {col.modifiedFieldsCount} modified field{col.modifiedFieldsCount > 1 ? 's' : ''}
+                                    </span>
+                                  )}
+                                  {col.relations && col.relations.length > 0 && (
+                                    <span style={{
+                                      fontSize: '0.7rem',
+                                      padding: '0.25rem 0.5rem',
+                                      backgroundColor: '#fef3c7',
+                                      color: '#92400e',
+                                      borderRadius: '4px',
+                                      fontWeight: '600'
+                                    }}>
+                                      🔗 {col.relations.length} relation{col.relations.length > 1 ? 's' : ''}
+                                    </span>
+                                  )}
                                 </div>
-                              )}
-                              
-                              {/* Relations */}
-                              {col.relations && col.relations.length > 0 && (
-                                <div style={{ fontSize: '0.75rem', color: '#d97706', marginTop: '0.5rem' }}>
-                                  🔗 {col.relations.length} relation change(s)
-                                </div>
-                              )}
+                                
+                                {/* Collapsible Field Details */}
+                                {!isCollapsed && hasDetails && (
+                                  <div style={{ 
+                                    backgroundColor: '#fffbeb', 
+                                    padding: '0.5rem', 
+                                    borderRadius: '4px',
+                                    marginTop: '0.5rem',
+                                    marginBottom: '0.5rem',
+                                    border: '1px solid #fde68a'
+                                  }}>
+                                    <div style={{ fontSize: '0.8rem', fontWeight: '600', color: '#92400e', marginBottom: '0.5rem' }}>
+                                      📝 Field Details:
+                                    </div>
+                                    {col.fieldChanges.map((field: any, idx: number) => (
+                                      <div key={idx} style={{ 
+                                        fontSize: '0.75rem', 
+                                        color: '#78350f',
+                                        marginLeft: '1rem',
+                                        marginBottom: '0.5rem',
+                                        lineHeight: '1.4',
+                                        padding: '0.5rem',
+                                        backgroundColor: field.action === 'create' ? '#f0fdf4' : 
+                                                         field.action === 'delete' ? '#fef2f2' : '#f5f3ff',
+                                        borderLeft: `3px solid ${field.action === 'create' ? '#10b981' : 
+                                                                   field.action === 'delete' ? '#dc2626' : '#6366f1'}`,
+                                        borderRadius: '4px'
+                                      }}>
+                                        <div style={{ marginBottom: '0.25rem' }}>
+                                          <strong style={{ fontSize: '0.85rem' }}>{field.field}</strong> 
+                                          <span style={{ 
+                                            marginLeft: '0.5rem',
+                                            padding: '0.125rem 0.375rem',
+                                            backgroundColor: field.action === 'create' ? '#dcfce7' : 
+                                                            field.action === 'delete' ? '#fee2e2' : '#e0e7ff',
+                                            color: field.action === 'create' ? '#166534' : 
+                                                   field.action === 'delete' ? '#991b1b' : '#3730a3',
+                                            borderRadius: '3px',
+                                            fontSize: '0.7rem',
+                                            fontWeight: '600'
+                                          }}>
+                                            {field.action === 'create' ? '✨ NEW' : 
+                                             field.action === 'delete' ? '🗑️ DELETED' : '✏️ MODIFIED'}
+                                          </span>
+                                          {field.type && <span style={{ marginLeft: '0.5rem', color: '#a16207', fontWeight: '600' }}>({field.type})</span>}
+                                        </div>
+                                        
+                                        {/* Description based on action */}
+                                        <div style={{ fontSize: '0.7rem', color: '#6b7280', marginBottom: '0.25rem', fontStyle: 'italic' }}>
+                                          {field.action === 'create' && '📍 Field exists in source but not in target'}
+                                          {field.action === 'delete' && '📍 Field exists in target but removed from source'}
+                                          {field.action === 'update' && '📍 Field has different configuration between source and target'}
+                                        </div>
+                                        
+                                        {/* Validation info */}
+                                        {field.validation && (
+                                          <div style={{ marginLeft: '1rem', marginTop: '0.25rem', color: '#b45309' }}>
+                                            ✓ Validation: {JSON.stringify(field.validation)}
+                                          </div>
+                                        )}
+                                        
+                                        {/* Constraints info */}
+                                        {field.constraints && (
+                                          <div style={{ marginLeft: '1rem', marginTop: '0.25rem', color: '#92400e', fontSize: '0.7rem' }}>
+                                            {field.constraints.nullable !== undefined && `Nullable: ${field.constraints.nullable}, `}
+                                            {field.constraints.unique && `Unique: ${field.constraints.unique}, `}
+                                            {field.constraints.primaryKey && `Primary Key: ${field.constraints.primaryKey}, `}
+                                            {field.constraints.maxLength && `Max Length: ${field.constraints.maxLength}`}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                
+                                {/* Collection-level validation */}
+                                {!isCollapsed && (col.schema?.validation || col.meta?.validation) && (
+                                  <div style={{ 
+                                    backgroundColor: '#fef3c7', 
+                                    padding: '0.5rem', 
+                                    borderRadius: '4px',
+                                    border: '1px solid #fcd34d',
+                                    fontSize: '0.75rem',
+                                    color: '#92400e',
+                                    marginTop: '0.5rem'
+                                  }}>
+                                    <strong>Collection Validation:</strong>
+                                    <pre style={{ margin: '0.25rem 0 0 0', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
+                                      {JSON.stringify(col.schema?.validation || col.meta?.validation, null, 2)}
+                                    </pre>
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </label>
-                        </div>
-                      ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1887,53 +2417,7 @@ export function CollectionList({
         </button>
 
         <button
-          onClick={async () => {
-            if (selectedCollections.length === 0) {
-              onStatusUpdate({ type: 'error', message: 'Please select at least one collection to migrate' });
-              return;
-            }
-            
-            // Check if validation passed
-            const hasErrors = selectedCollections.some(name => 
-              validationResults[name] && !validationResults[name].isValid
-            );
-            
-            if (hasErrors) {
-              onStatusUpdate({ type: 'error', message: 'Please fix validation errors before migration' });
-              return;
-            }
-            
-            setLoading('migrate_selected', true);
-            try {
-              let successCount = 0;
-              let errorCount = 0;
-              
-              for (const collectionName of selectedCollections) {
-                try {
-                  await handleImport(collectionName);
-                  successCount++;
-                } catch (error) {
-                  errorCount++;
-                }
-              }
-              
-              if (errorCount > 0) {
-                onStatusUpdate({ 
-                  type: 'warning', 
-                  message: `Migration completed: ${successCount} successful, ${errorCount} failed` 
-                });
-              } else {
-                onStatusUpdate({ 
-                  type: 'success', 
-                  message: `Successfully migrated ${successCount} collections` 
-                });
-              }
-            } catch (error: any) {
-              onStatusUpdate({ type: 'error', message: `Migration failed: ${error.message}` });
-            } finally {
-              setLoading('migrate_selected', false);
-            }
-          }}
+          onClick={analyzeBatchMigration}
           style={{
             backgroundColor: '#dc2626',
             color: 'white',
@@ -1942,11 +2426,15 @@ export function CollectionList({
             borderRadius: '6px',
             border: 'none',
             cursor: 'pointer',
-            minWidth: '160px'
+            minWidth: '200px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
           }}
           disabled={Object.values(loading).some(Boolean) || selectedCollections.length === 0}
+          title="Analyzes dependencies and migrates collections in the correct order"
         >
-          {loading.migrate_selected ? 'Migrating...' : `Migrate Selected (${selectedCollections.length})`}
+          🔄 Smart Batch Migration ({selectedCollections.length})
         </button>
       </div>
 
@@ -2849,6 +3337,17 @@ export function CollectionList({
         })}
       />
 
+      {/* Batch Migration Modal */}
+      <BatchMigrationModal
+        isVisible={showBatchMigrationModal}
+        onClose={() => setShowBatchMigrationModal(false)}
+        migrationOrder={migrationOrder}
+        dependencyGraph={dependencyGraph}
+        customOrder={customOrder}
+        onReorder={moveCollectionInOrder}
+        onStartMigration={executeBatchMigration}
+        progress={batchMigrationProgress}
+      />
 
       {/* Error Logs Modal */}
       {showErrorLogs && (

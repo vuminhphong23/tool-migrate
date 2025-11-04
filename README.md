@@ -15,6 +15,7 @@
 ## Features ✨
 
 - **Directus-to-Directus import 🔁**: Transfer collection data from another Directus instance into your current project
+- **Smart Batch Migration 🔄**: Automatically migrate multiple collections with dependency analysis and optimal ordering
 - **Preflight permission check ✅**: Test collection access before importing
 - **Token validation 🛡️**: Validate admin token against the source server
 - **History management 🕘**: Save and reuse domain and token inputs (localStorage)
