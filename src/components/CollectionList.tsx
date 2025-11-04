@@ -55,9 +55,11 @@ export function CollectionList({
   const [selectedSchemaCollections, setSelectedSchemaCollections] = useState<string[]>([])
   const [schemaCollectionFilter, setSchemaCollectionFilter] = useState<string>('')
   const [collapsedFieldDetails, setCollapsedFieldDetails] = useState<Record<string, boolean>>({})
+  const [collectionSearch, setCollectionSearch] = useState<string>('')
   
   // Item Selector states
   const [showItemSelector, setShowItemSelector] = useState(false)
+  const [sourceRelations, setSourceRelations] = useState<any[] | null>(null)
   const [currentPreviewCollection, setCurrentPreviewCollection] = useState<string>('')
   const [previewItems, setPreviewItems] = useState<any[]>([])
   const [previewTotal, setPreviewTotal] = useState<number>(0)
@@ -1324,6 +1326,18 @@ export function CollectionList({
     setShowItemSelector(true)
 
     try {
+      // Lazy-load relations once to help the modal detect relation fields accurately
+      if (!sourceRelations) {
+        try {
+          const relRes = await getRelations(sourceUrl, sourceToken)
+          if (relRes.success) {
+            setSourceRelations(relRes.relations || [])
+          }
+        } catch (e) {
+          // ignore relation loading failure; modal will fallback to heuristics
+        }
+      }
+
       // Load ALL items (limit: -1 means no limit in Directus)
       const result = await previewCollectionItems(
         sourceUrl,
@@ -2384,6 +2398,38 @@ export function CollectionList({
         >
           {isValidating ? 'Validating...' : 'Validate Migration'}
         </button>
+        <button
+          onClick={() => {
+            if (selectedCollections.length !== 1) {
+              onStatusUpdate({ type: 'warning', message: 'Please select exactly 1 collection to import items.' })
+              return
+            }
+            const colName = selectedCollections[0]
+            const col = collections.find(c => c.collection === colName)
+            if (!col) return
+            const status = getCollectionStatus(col)
+            if (status === 'new') {
+              onStatusUpdate({ type: 'warning', message: 'Cannot import to new collections. Please sync schema first.' })
+              return
+            }
+            handlePreviewItems(colName)
+          }}
+          style={{
+            backgroundColor: '#3b82f6',
+            color: 'white',
+            padding: '0.75rem 1.5rem',
+            fontWeight: '500',
+            borderRadius: '6px',
+            border: 'none',
+            cursor: 'pointer',
+            minWidth: '160px',
+            marginLeft: '0.5rem'
+          }}
+          disabled={Object.values(loading).some(Boolean) || selectedCollections.length !== 1}
+          title="Open item selector for the selected collection"
+        >
+          📥 Import Selected
+        </button>
       </div>
 
       {/* Custom Collections List */}
@@ -2421,6 +2467,22 @@ export function CollectionList({
             </div>
             
             <div style={{ width: '1px', height: '20px', backgroundColor: '#d1d5db' }}></div>
+
+            {/* Search Collections */}
+            <input
+              type="text"
+              placeholder="Search collections..."
+              value={collectionSearch}
+              onChange={(e) => { setCollectionSearch(e.target.value); setCurrentPage(1); }}
+              style={{
+                padding: '0.375rem 0.5rem',
+                fontSize: '0.875rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                backgroundColor: 'white',
+                minWidth: '220px'
+              }}
+            />
             
             <button
               onClick={() => {
@@ -2485,18 +2547,20 @@ export function CollectionList({
 
         <div style={{ display: 'grid', gap: '1rem' }}>
           {(() => {
+            const q = collectionSearch.trim().toLowerCase();
             const filteredCollections = collections.filter(c => {
               if (c.collection.startsWith('directus_')) return false;
               if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
               if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
               return false;
             });
+            const searchedCollections = q ? filteredCollections.filter(c => c.collection.toLowerCase().includes(q)) : filteredCollections;
             
-            const totalItems = filteredCollections.length;
+            const totalItems = searchedCollections.length;
             const totalPages = itemsPerPage === -1 ? 1 : Math.ceil(totalItems / itemsPerPage);
             const startIndex = itemsPerPage === -1 ? 0 : (currentPage - 1) * itemsPerPage;
             const endIndex = itemsPerPage === -1 ? totalItems : startIndex + itemsPerPage;
-            const paginatedCollections = filteredCollections.slice(startIndex, endIndex);
+            const paginatedCollections = searchedCollections.slice(startIndex, endIndex);
             
             return paginatedCollections.map((collection) => {
             const isSelected = selectedCollections.includes(collection.collection);
@@ -2510,7 +2574,9 @@ export function CollectionList({
                 padding: '1rem',
                 border: `1px solid ${hasValidationErrors ? '#fecaca' : isSelected ? '#93c5fd' : '#e5e7eb'}`,
                 borderRadius: '8px',
-                backgroundColor: hasValidationErrors ? '#fef2f2' : isSelected ? '#f0f9ff' : 'white'
+                backgroundColor: hasValidationErrors ? '#fef2f2' : isSelected ? '#f0f9ff' : 'white',
+                position: 'relative',
+                paddingRight: '14rem'
               }}>
                 <div style={{
                   display: 'flex',
@@ -2654,7 +2720,7 @@ export function CollectionList({
                     )}
                   </div>
                   
-                  <div className="button-group">
+                  <div className="action-rail" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '12rem', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f9fafb', borderLeft: '1px solid #e5e7eb', zIndex: 1 }}>
                     {loading[`import_${collection.collection}`] && importProgress[collection.collection] ? (
                       <div style={{
                         display: 'flex',
@@ -2692,7 +2758,7 @@ export function CollectionList({
                         </div>
                       </div>
                     ) : (
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <div className="button-group" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                         <button
                           onClick={() => handlePreviewItems(collection.collection)}
                           disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
@@ -2704,28 +2770,14 @@ export function CollectionList({
                             border: 'none',
                             cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
                             fontWeight: '500',
-                            fontSize: '0.875rem'
+                            fontSize: '0.875rem',
+                            lineHeight: '1',
+                            display: 'inline-flex',
+                            alignItems: 'center'
                           }}
                           title="Preview and select specific items to import"
                         >
                           📋 Select Items
-                        </button>
-                        <button
-                          onClick={() => handleImport(collection.collection)}
-                          disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
-                          style={{
-                            backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#f97316',
-                            color: 'white',
-                            padding: '0.5rem 1rem',
-                            borderRadius: '6px',
-                            border: 'none',
-                            cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
-                            fontWeight: '500',
-                            opacity: loading[`import_${collection.collection}`] ? 0.7 : 1
-                          }}
-                          title={collectionStatus === 'new' ? 'Cannot import to new collections. Please sync schema first.' : 'Import all items from source'}
-                        >
-                          {collectionStatus === 'new' ? 'Schema Required' : 'Import All'}
                         </button>
                       </div>
                     )}
@@ -2739,14 +2791,16 @@ export function CollectionList({
         
         {/* Pagination Navigation */}
         {(() => {
+          const q = collectionSearch.trim().toLowerCase();
           const filteredCollections = collections.filter(c => {
             if (c.collection.startsWith('directus_')) return false;
             if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
             if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
             return false;
           });
+          const searchedCollections = q ? filteredCollections.filter(c => c.collection.toLowerCase().includes(q)) : filteredCollections;
           
-          const totalItems = filteredCollections.length;
+          const totalItems = searchedCollections.length;
           const totalPages = itemsPerPage === -1 ? 1 : Math.ceil(totalItems / itemsPerPage);
           
           if (itemsPerPage === -1 || totalPages <= 1) return null;
@@ -3331,6 +3385,7 @@ export function CollectionList({
           onLoadMore={() => {}}
           hasMore={false}
           loading={loadingPreview}
+          relations={sourceRelations || []}
         />
       )}
 
@@ -3480,6 +3535,7 @@ export function CollectionList({
           onLoadMore={() => {}} // No longer needed - all items loaded at once
           hasMore={false} // Always false since we load all items
           loading={loadingPreview}
+          relations={sourceRelations || []}
         />
       )}
     </div>
