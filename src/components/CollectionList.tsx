@@ -3,9 +3,7 @@ import { importFromDirectus, previewCollectionItems, importSelectedItems, getRel
 import { FlowsManager } from './FlowsManager'
 import { AccessControlManager } from './AccessControlManager'
 import { DocumentationTab } from './DocumentationTab'
-import { BatchMigrationModal } from './BatchMigrationModal'
 import { ItemSelectorModal } from './ItemSelectorModal'
-import { MigrationOrderManager } from './MigrationOrderManager'
 import { FilesManager } from './FilesManager'
 import type { Collection, OperationStatus } from '../types'
 import { analyzeDependencies, calculateMigrationOrder, validateCustomOrder, type DependencyGraph, type MigrationOrder } from '../lib/dependencyAnalyzer'
@@ -67,24 +65,6 @@ export function CollectionList({
   const [selectedItemIds, setSelectedItemIds] = useState<(string | number)[]>([])
   const [loadingPreview, setLoadingPreview] = useState(false)
   
-  // Migration Order Manager states
-  const [showMigrationOrderManager, setShowMigrationOrderManager] = useState(false)
-  const [relations, setRelations] = useState<any[]>([])
-  const [loadingRelations, setLoadingRelations] = useState(false)
-  
-  // Batch Migration State
-  const [showBatchMigrationModal, setShowBatchMigrationModal] = useState(false)
-  const [dependencyGraph, setDependencyGraph] = useState<DependencyGraph | null>(null)
-  const [migrationOrder, setMigrationOrder] = useState<MigrationOrder | null>(null)
-  const [customOrder, setCustomOrder] = useState<string[]>([])
-  const [batchMigrationProgress, setBatchMigrationProgress] = useState<{
-    current: number;
-    total: number;
-    currentCollection: string;
-    status: 'idle' | 'running' | 'completed' | 'failed';
-    results: Array<{ collection: string; success: boolean; message: string }>;
-  }>({ current: 0, total: 0, currentCollection: '', status: 'idle', results: [] })
-  
   // Load target collections for comparison
   const loadTargetCollections = async () => {
     try {
@@ -97,22 +77,6 @@ export function CollectionList({
       // Silent fail
     }
   };
-
-  // Auto-load relations on mount for dependency notes
-  React.useEffect(() => {
-    const loadRelations = async () => {
-      try {
-        const result = await getRelations(sourceUrl, sourceToken)
-        if (result.success) {
-          setRelations(result.relations || [])
-        }
-      } catch (error) {
-        // Silent fail - dependency notes just won't show
-      }
-    }
-    
-    loadRelations()
-  }, [sourceUrl, sourceToken])
 
 
   // Helper function to check if collection exists in target
@@ -1395,145 +1359,6 @@ export function CollectionList({
 
   // Load more is no longer needed - we load all items at once
 
-  // Fetch relations from source
-  const handleOpenMigrationOrderManager = async () => {
-    setLoadingRelations(true)
-    
-    try {
-      const result = await getRelations(sourceUrl, sourceToken)
-      
-      if (result.success) {
-        setRelations(result.relations || [])
-        setShowMigrationOrderManager(true)
-        onStatusUpdate({
-          type: 'success',
-          message: `Loaded ${result.relations?.length || 0} relationships`
-        })
-      } else {
-        onStatusUpdate({
-          type: 'error',
-          message: `Failed to load relationships: ${result.error?.message || 'Unknown error'}`
-        })
-      }
-    } catch (error: any) {
-      onStatusUpdate({
-        type: 'error',
-        message: `Failed to load relationships: ${error.message}`
-      })
-    } finally {
-      setLoadingRelations(false)
-    }
-  }
-
-  // Get dependency info for a collection
-  const getCollectionDependencies = (collectionName: string): string[] => {
-    if (!relations || relations.length === 0) return []
-    
-    const dependencies: string[] = []
-    
-    relations.forEach((relation: any) => {
-      // If this collection has a foreign key to another collection
-      if (relation.collection === collectionName && relation.related_collection) {
-        // Skip self-references
-        if (relation.related_collection !== collectionName) {
-          if (!dependencies.includes(relation.related_collection)) {
-            dependencies.push(relation.related_collection)
-          }
-        }
-      }
-    })
-    
-    return dependencies
-  }
-
-  // Batch migrate collections in order
-  const handleBatchMigration = async (orderedCollections: string[]) => {
-    setShowMigrationOrderManager(false)
-    setBatchMigrationProgress({ 
-      current: 0, 
-      total: orderedCollections.length, 
-      currentCollection: '', 
-      status: 'running',
-      results: []
-    })
-
-    let successCount = 0
-    let failedCount = 0
-    const results: Array<{ collection: string; success: boolean; message: string }> = []
-
-    for (let i = 0; i < orderedCollections.length; i++) {
-      const collectionName = orderedCollections[i]
-      setBatchMigrationProgress(prev => ({ 
-        ...prev!,
-        current: i + 1, 
-        total: orderedCollections.length, 
-        currentCollection: collectionName 
-      }))
-
-      try {
-        const result = await importFromDirectus(
-          sourceUrl,
-          sourceToken,
-          targetUrl,
-          targetToken,
-          collectionName,
-          {
-            onProgress: () => {} // Don't update individual progress during batch
-          }
-        )
-
-        if (result.success) {
-          successCount++
-          const importedItems = result.importedItems || []
-          const created = importedItems.filter(item => item.action === 'created').length
-          const updated = importedItems.filter(item => item.action === 'updated').length
-          const failed = importedItems.filter(item => item.status === 'error').length
-          
-          results.push({
-            collection: collectionName,
-            success: true,
-            message: `${created} created, ${updated} updated, ${failed} failed`
-          })
-        } else {
-          failedCount++
-          results.push({
-            collection: collectionName,
-            success: false,
-            message: result.message || 'Unknown error'
-          })
-        }
-      } catch (error: any) {
-        failedCount++
-        results.push({
-          collection: collectionName,
-          success: false,
-          message: error.message
-        })
-      }
-
-      // Small delay between collections
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-
-    setBatchMigrationProgress({
-      current: orderedCollections.length,
-      total: orderedCollections.length,
-      currentCollection: '',
-      status: 'completed',
-      results
-    })
-
-    // Show summary
-    const summaryMessage = `Batch migration complete!\n✅ ${successCount} succeeded\n❌ ${failedCount} failed\n\nDetails:\n${results.map(r => `${r.success ? '✅' : '❌'} ${r.collection}: ${r.message}`).join('\n')}`
-    
-    onStatusUpdate({
-      type: failedCount > 0 ? 'warning' : 'success',
-      message: `Batch migration: ${successCount} succeeded, ${failedCount} failed`
-    })
-
-    alert(summaryMessage)
-  }
-
   // Import selected items
   const handleImportSelected = async (selectedFields?: string[]) => {
     if (selectedItemIds.length === 0) return
@@ -1663,178 +1488,6 @@ export function CollectionList({
       }, 1000);
     }
   }
-
-  // Batch Migration Functions
-  const analyzeBatchMigration = async () => {
-    if (selectedCollections.length === 0) {
-      onStatusUpdate({ type: 'error', message: 'Please select at least one collection to analyze' });
-      return;
-    }
-
-    try {
-      // Get schema snapshot if not already available
-      let relations = schemaSnapshot?.relations || [];
-      
-      if (!schemaSnapshot) {
-        onStatusUpdate({ type: 'info', message: 'Fetching schema information...' });
-        const client = await import('../lib/DirectusClient').then(m => m.DirectusClient);
-        const sourceClient = new client(sourceUrl, sourceToken);
-        const response = await sourceClient.get('/schema/snapshot');
-        relations = response.data?.relations || [];
-      }
-
-      // Analyze dependencies
-      const graph = analyzeDependencies(relations);
-      setDependencyGraph(graph);
-
-      // Calculate migration order
-      const order = calculateMigrationOrder(graph, selectedCollections);
-      setMigrationOrder(order);
-      setCustomOrder(order.order);
-
-      // Show modal
-      setShowBatchMigrationModal(true);
-
-      if (order.cycles.length > 0) {
-        onStatusUpdate({ 
-          type: 'warning', 
-          message: `Detected ${order.cycles.length} circular dependencies. Please review the migration order.` 
-        });
-      } else {
-        onStatusUpdate({ 
-          type: 'success', 
-          message: `Migration order calculated for ${order.order.length} collections` 
-        });
-      }
-    } catch (error: any) {
-      onStatusUpdate({ type: 'error', message: `Failed to analyze dependencies: ${error.message}` });
-      logError('analyze_batch_migration', error);
-    }
-  };
-
-  const executeBatchMigration = async () => {
-    if (customOrder.length === 0) {
-      onStatusUpdate({ type: 'error', message: 'No collections to migrate' });
-      return;
-    }
-
-    // Validate custom order if modified
-    if (dependencyGraph) {
-      const validation = validateCustomOrder(dependencyGraph, customOrder);
-      if (!validation.valid) {
-        onStatusUpdate({ 
-          type: 'error', 
-          message: `Invalid migration order: ${validation.errors[0]}. Please reorder collections.` 
-        });
-        return;
-      }
-    }
-
-    setBatchMigrationProgress({
-      current: 0,
-      total: customOrder.length,
-      currentCollection: '',
-      status: 'running',
-      results: []
-    });
-
-    const results: Array<{ collection: string; success: boolean; message: string }> = [];
-
-    for (let i = 0; i < customOrder.length; i++) {
-      const collectionName = customOrder[i];
-      
-      setBatchMigrationProgress(prev => ({
-        ...prev,
-        current: i + 1,
-        currentCollection: collectionName
-      }));
-
-      try {
-        onStatusUpdate({ type: 'info', message: `Migrating ${collectionName} (${i + 1}/${customOrder.length})...` });
-        
-        const result = await importFromDirectus(
-          sourceUrl,
-          sourceToken,
-          targetUrl,
-          targetToken,
-          collectionName,
-          {
-            limit: importLimit || undefined,
-            titleFilter: titleFilter.trim() || undefined,
-            onProgress: (current: number, total: number) => {
-              setImportProgress(prev => ({ ...prev, [collectionName]: { current, total } }))
-            }
-          }
-        );
-
-        if (result.success) {
-          const importedItems = result.importedItems || [];
-          const successful = importedItems.filter(item => item.status !== 'error').length;
-          const failed = importedItems.filter(item => item.status === 'error').length;
-          
-          const message = `${successful} items imported (${failed} failed)`;
-          results.push({ collection: collectionName, success: true, message });
-          
-          onStatusUpdate({
-            type: failed > 0 ? 'warning' : 'success',
-            message: `✓ ${collectionName}: ${message}`
-          });
-        } else {
-          results.push({ collection: collectionName, success: false, message: result.message });
-          onStatusUpdate({
-            type: 'error',
-            message: `✗ ${collectionName}: ${result.message}`
-          });
-        }
-
-        // Small delay between collections
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-      } catch (error: any) {
-        const message = error.message || 'Unknown error';
-        results.push({ collection: collectionName, success: false, message });
-        onStatusUpdate({
-          type: 'error',
-          message: `✗ ${collectionName}: ${message}`
-        });
-        logError(`batch_migration_${collectionName}`, error);
-      }
-    }
-
-    const successCount = results.filter(r => r.success).length;
-    const failCount = results.filter(r => !r.success).length;
-
-    setBatchMigrationProgress(prev => ({
-      ...prev,
-      status: 'completed',
-      results
-    }));
-
-    onStatusUpdate({
-      type: successCount === customOrder.length ? 'success' : 'warning',
-      message: `Batch migration completed: ${successCount} successful, ${failCount} failed`
-    });
-  };
-
-  const moveCollectionInOrder = (fromIndex: number, toIndex: number) => {
-    const newOrder = [...customOrder];
-    const [moved] = newOrder.splice(fromIndex, 1);
-    newOrder.splice(toIndex, 0, moved);
-    setCustomOrder(newOrder);
-
-    // Validate new order
-    if (dependencyGraph) {
-      const validation = validateCustomOrder(dependencyGraph, newOrder);
-      if (!validation.valid) {
-        onStatusUpdate({ 
-          type: 'warning', 
-          message: `Warning: ${validation.errors[0]}` 
-        });
-      } else {
-        onStatusUpdate({ type: 'success', message: 'Order updated and validated' });
-      }
-    }
-  };
 
   if (collections.length === 0) {
     return (
@@ -2635,24 +2288,6 @@ export function CollectionList({
       {/* Main Action Buttons */}
       <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginBottom: '1.5rem' }}>
         <button
-          onClick={handleOpenMigrationOrderManager}
-          style={{
-            backgroundColor: '#8b5cf6',
-            color: 'white',
-            padding: '0.75rem 1.5rem',
-            fontWeight: '600',
-            borderRadius: '6px',
-            border: 'none',
-            cursor: 'pointer',
-            minWidth: '200px',
-            boxShadow: '0 2px 4px rgba(139, 92, 246, 0.3)'
-          }}
-          disabled={Object.values(loading).some(Boolean) || batchMigrationProgress !== null || loadingRelations}
-        >
-          {loadingRelations ? 'Loading...' : '🔄 Batch Migrate by Order'}
-        </button>
-
-        <button
           onClick={async () => {
             setLoading('refresh_collections', true);
             try {
@@ -2748,27 +2383,6 @@ export function CollectionList({
           disabled={Object.values(loading).some(Boolean) || selectedCollections.length === 0}
         >
           {isValidating ? 'Validating...' : 'Validate Migration'}
-        </button>
-
-        <button
-          onClick={analyzeBatchMigration}
-          style={{
-            backgroundColor: '#dc2626',
-            color: 'white',
-            padding: '0.75rem 1.5rem',
-            fontWeight: '500',
-            borderRadius: '6px',
-            border: 'none',
-            cursor: 'pointer',
-            minWidth: '200px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem'
-          }}
-          disabled={Object.values(loading).some(Boolean) || selectedCollections.length === 0}
-          title="Analyzes dependencies and migrates collections in the correct order"
-        >
-          🔄 Smart Batch Migration ({selectedCollections.length})
         </button>
       </div>
 
@@ -2933,55 +2547,6 @@ export function CollectionList({
                         }}>
                           {collection.collection}
                         </h4>
-                        
-                        {/* Dependency Note */}
-                        {(() => {
-                          const deps = getCollectionDependencies(collection.collection)
-                          
-                          // Also check reverse: what depends on this collection
-                          const dependedBy: string[] = []
-                          relations.forEach((relation: any) => {
-                            if (relation.related_collection === collection.collection && 
-                                relation.collection !== collection.collection) {
-                              if (!dependedBy.includes(relation.collection)) {
-                                dependedBy.push(relation.collection)
-                              }
-                            }
-                          })
-                          
-                          if (deps.length > 0 || dependedBy.length > 0) {
-                            return (
-                              <div style={{ marginTop: '0.25rem' }}>
-                                {deps.length > 0 && (
-                                  <div style={{
-                                    padding: '0.375rem 0.5rem',
-                                    backgroundColor: '#eff6ff',
-                                    borderLeft: '3px solid #3b82f6',
-                                    borderRadius: '4px',
-                                    fontSize: '0.75rem',
-                                    color: '#1e40af',
-                                    marginBottom: dependedBy.length > 0 ? '0.25rem' : 0
-                                  }}>
-                                    <strong>⚠️ Migrate first:</strong> {deps.join(', ')}
-                                  </div>
-                                )}
-                                {dependedBy.length > 0 && (
-                                  <div style={{
-                                    padding: '0.375rem 0.5rem',
-                                    backgroundColor: '#f0fdf4',
-                                    borderLeft: '3px solid #22c55e',
-                                    borderRadius: '4px',
-                                    fontSize: '0.75rem',
-                                    color: '#15803d'
-                                  }}>
-                                    <strong>✅ Required by:</strong> {dependedBy.join(', ')}
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          }
-                          return null
-                        })()}
                       </div>
                       
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3766,31 +3331,8 @@ export function CollectionList({
           onLoadMore={() => {}}
           hasMore={false}
           loading={loadingPreview}
-          relations={relations}
         />
       )}
-
-      {/* Migration Order Manager Modal */}
-      {showMigrationOrderManager && (
-        <MigrationOrderManager
-          collections={collections}
-          relations={relations}
-          onClose={() => setShowMigrationOrderManager(false)}
-          onStartMigration={handleBatchMigration}
-        />
-      )}
-
-      {/* Batch Migration Modal */}
-      <BatchMigrationModal
-        isVisible={showBatchMigrationModal}
-        onClose={() => setShowBatchMigrationModal(false)}
-        migrationOrder={migrationOrder}
-        dependencyGraph={dependencyGraph}
-        customOrder={customOrder}
-        onReorder={moveCollectionInOrder}
-        onStartMigration={executeBatchMigration}
-        progress={batchMigrationProgress}
-      />
 
       {/* Error Logs Modal */}
       {showErrorLogs && (
@@ -3938,70 +3480,7 @@ export function CollectionList({
           onLoadMore={() => {}} // No longer needed - all items loaded at once
           hasMore={false} // Always false since we load all items
           loading={loadingPreview}
-          relations={relations} // Pass relations for dependency notes
         />
-      )}
-
-      {/* Migration Order Manager Modal */}
-      {showMigrationOrderManager && (
-        <MigrationOrderManager
-          collections={collections}
-          relations={relations}
-          onClose={() => setShowMigrationOrderManager(false)}
-          onStartMigration={handleBatchMigration}
-        />
-      )}
-
-      {/* Batch Migration Progress Overlay */}
-      {batchMigrationProgress && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 2000
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            borderRadius: '12px',
-            padding: '2rem',
-            maxWidth: '500px',
-            width: '90%',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
-          }}>
-            <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.25rem', fontWeight: '600', color: '#111827' }}>
-              🔄 Batch Migration in Progress
-            </h3>
-            <div style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
-              Migrating {batchMigrationProgress.current} of {batchMigrationProgress.total} collections
-            </div>
-            <div style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: '500', color: '#3b82f6' }}>
-              Current: {batchMigrationProgress.currentCollection}
-            </div>
-            <div style={{
-              width: '100%',
-              height: '8px',
-              backgroundColor: '#e5e7eb',
-              borderRadius: '9999px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${(batchMigrationProgress.current / batchMigrationProgress.total) * 100}%`,
-                height: '100%',
-                backgroundColor: '#3b82f6',
-                transition: 'width 0.3s ease'
-              }}></div>
-            </div>
-            <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: '#9ca3af', textAlign: 'center' }}>
-              Please wait... Do not close this window
-            </div>
-          </div>
-        </div>
       )}
     </div>
   )
