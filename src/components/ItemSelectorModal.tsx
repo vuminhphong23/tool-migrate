@@ -223,15 +223,22 @@ export function ItemSelectorModal({
             rel?.meta?.junction_field ||
             rel?.schema?.junction_table
           );
+          // In Directus, M2A (polymorphic) has related_collection=null and uses a junction
+          const oneField = String(rel?.meta?.one_field || "").toLowerCase();
+          const oneCollectionField = String(
+            rel?.meta?.one_collection_field || ""
+          ).toLowerCase();
           const isPolymorphic =
             rel?.related_collection == null ||
-            !!rel?.meta?.one_field ||
-            !!rel?.meta?.one_collection_field;
-          if (hasJunction) {
-            relationType = "m2m";
-          } else if (isPolymorphic && looksLikeArrayRelation) {
-            // Many-to-any (array of mixed collection references)
+            !!rel?.meta?.one_collection_field ||
+            Array.isArray(rel?.meta?.one_allowed_collections) ||
+            oneField === "item" ||
+            oneCollectionField === "collection";
+
+          if (isPolymorphic && hasJunction) {
             relationType = "m2a";
+          } else if (hasJunction) {
+            relationType = "m2m";
           } else if (looksLikeArrayRelation) {
             relationType = "o2m";
           } else {
