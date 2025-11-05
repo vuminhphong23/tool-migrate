@@ -36,7 +36,7 @@ export function FlowsManager({
     preserveIds: true,
     validateReferences: true,
     transformOptions: false,
-    conflictResolution: 'skip'
+    conflictResolution: 'overwrite' // Default to overwrite for updates
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
@@ -261,13 +261,17 @@ export function FlowsManager({
           <button
             onClick={onClose}
             style={{
-              background: 'none',
+              backgroundColor: '#6b7280',
+              color: 'white',
+              padding: '0.5rem 1rem',
               border: 'none',
-              fontSize: '1.5rem',
-              cursor: 'pointer'
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: '500'
             }}
           >
-            ×
+            Close
           </button>
         </div>
 
@@ -315,47 +319,45 @@ export function FlowsManager({
         {/* Flows Tab Content */}
         {activeTab === 'flows' && (
           <>
-        {/* Statistics Summary */}
-        {sourceFlows.length > 0 && !loadingTarget && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: '1rem',
-            marginBottom: '1.5rem'
-          }}>
-            <div style={{
-              padding: '1rem',
-              backgroundColor: '#f8fafc',
-              borderRadius: '6px',
-              border: '1px solid #e2e8f0'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Flows</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#1e293b' }}>{sourceFlows.length}</div>
+        {/* Source Analysis */}
+        <div style={{
+          backgroundColor: '#f8fafc',
+          padding: '1.5rem',
+          borderRadius: '8px', 
+          marginBottom: '1.5rem',
+          border: '1px solid #e2e8f0'
+        }}>
+                    
+          {/* Relationship Diagram */}
+          <div style={{ textAlign: 'center', marginBottom: '1.5rem', fontSize: '0.875rem', color: '#6b7280' }}>
+            🔗 <strong>Relationship:</strong> <span style={{ color: '#3b82f6' }}>Flow</span> → (n) <span style={{ color: '#059669' }}>Operation</span>
+          </div>
+
+          {/* Statistics Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+            <div>
+              <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>Flows: {sourceFlows.length} total</div>
+              <div style={{ fontSize: '0.875rem', color: '#059669' }}>New: {sourceFlows.filter(f => !targetFlows.some(tf => tf.id === f.id)).length}</div>
+              <div style={{ fontSize: '0.875rem', color: '#f59e0b' }}>Existing: {sourceFlows.filter(f => targetFlows.some(tf => tf.id === f.id)).length}</div>
             </div>
-            <div style={{
-              padding: '1rem',
-              backgroundColor: '#eff6ff',
-              borderRadius: '6px',
-              border: '1px solid #bfdbfe'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: '#1e40af', marginBottom: '0.25rem' }}>New</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#1e40af' }}>
-                {sourceFlows.filter(f => !targetFlows.some(tf => tf.id === f.id)).length}
-              </div>
-            </div>
-            <div style={{
-              padding: '1rem',
-              backgroundColor: '#fffbeb',
-              borderRadius: '6px',
-              border: '1px solid #fde68a'
-            }}>
-              <div style={{ fontSize: '0.875rem', color: '#92400e', marginBottom: '0.25rem' }}>Existing</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#92400e' }}>
-                {sourceFlows.filter(f => targetFlows.some(tf => tf.id === f.id)).length}
-              </div>
+            <div>
+              <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>Operations: {sourceOperations.length} total</div>
+              <div style={{ fontSize: '0.875rem', color: '#059669' }}>New: {sourceOperations.filter(op => !targetOperations.some(to => to.id === op.id)).length}</div>
+              <div style={{ fontSize: '0.875rem', color: '#f59e0b' }}>Existing: {sourceOperations.filter(op => targetOperations.some(to => to.id === op.id)).length}</div>
             </div>
           </div>
-        )}
+
+          {/* Available Flows */}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <span style={{ color: '#10b981', marginRight: '0.5rem' }}>✅</span>
+            <span style={{ color: '#059669', fontSize: '0.875rem' }}>{sourceFlows.length} flows available</span>
+          </div>
+          
+          {/* Warning Text */}
+          <div style={{ fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic' }}>
+            ⚠️ Operations are organized by flows and will be migrated automatically when you select flows
+          </div>
+        </div>
 
         {/* Filter Buttons */}
         {sourceFlows.length > 0 && !loadingTarget && (
@@ -379,7 +381,7 @@ export function FlowsManager({
                 fontWeight: '500',
                 backgroundColor: statusFilter === 'all' ? '#3b82f6' : 'white',
                 color: statusFilter === 'all' ? 'white' : '#64748b',
-                border: statusFilter === 'all' ? 'none' : '1px solid #e2e8f0'
+           
               }}
             >
               All ({sourceFlows.length})
@@ -392,9 +394,9 @@ export function FlowsManager({
                 borderRadius: '4px',
                 cursor: 'pointer',
                 fontWeight: '500',
-                backgroundColor: statusFilter === 'new' ? '#3b82f6' : 'white',
+                backgroundColor: statusFilter === 'new' ? '#10B981' : 'white',
                 color: statusFilter === 'new' ? 'white' : '#1e40af',
-                border: statusFilter === 'new' ? 'none' : '1px solid #bfdbfe'
+             
               }}
             >
               New ({sourceFlows.filter(f => !targetFlows.some(tf => tf.id === f.id)).length})
@@ -407,9 +409,9 @@ export function FlowsManager({
                 borderRadius: '4px',
                 cursor: 'pointer',
                 fontWeight: '500',
-                backgroundColor: statusFilter === 'existing' ? '#3b82f6' : 'white',
+                backgroundColor: statusFilter === 'existing' ? '#F97316' : 'white',
                 color: statusFilter === 'existing' ? 'white' : '#92400e',
-                border: statusFilter === 'existing' ? 'none' : '1px solid #fde68a'
+                
               }}
             >
               Existing ({sourceFlows.filter(f => targetFlows.some(tf => tf.id === f.id)).length})
@@ -573,76 +575,6 @@ export function FlowsManager({
                 );
               });
             })()}
-          </div>
-        </div>
-
-        {/* Migration Options */}
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h3 style={{ margin: 0 }}>Migration Options</h3>
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              style={{
-                backgroundColor: 'transparent',
-                color: '#3b82f6',
-                border: '1px solid #3b82f6',
-                padding: '0.25rem 0.5rem',
-                fontSize: '0.75rem'
-              }}
-            >
-              {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
-            </button>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <input
-                type="checkbox"
-                checked={migrationOptions.preserveIds}
-                onChange={(e) => setMigrationOptions(prev => ({ ...prev, preserveIds: e.target.checked }))}
-              />
-              <span>Preserve original IDs</span>
-            </label>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <input
-                type="checkbox"
-                checked={migrationOptions.validateReferences}
-                onChange={(e) => setMigrationOptions(prev => ({ ...prev, validateReferences: e.target.checked }))}
-              />
-              <span>Validate references</span>
-            </label>
-
-            {showAdvanced && (
-              <>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={migrationOptions.transformOptions}
-                    onChange={(e) => setMigrationOptions(prev => ({ ...prev, transformOptions: e.target.checked }))}
-                  />
-                  <span>Transform environment options</span>
-                </label>
-
-                <div>
-                  <label style={{ fontSize: '0.875rem', marginBottom: '0.25rem', display: 'block' }}>
-                    Conflict Resolution:
-                  </label>
-                  <select
-                    value={migrationOptions.conflictResolution}
-                    onChange={(e) => setMigrationOptions(prev => ({ 
-                      ...prev, 
-                      conflictResolution: e.target.value as 'skip' | 'overwrite' | 'rename' 
-                    }))}
-                    style={{ width: '100%', padding: '0.5rem' }}
-                  >
-                    <option value="skip">Skip existing</option>
-                    <option value="overwrite">Overwrite existing</option>
-                    <option value="rename">Rename conflicts</option>
-                  </select>
-                </div>
-              </>
-            )}
           </div>
         </div>
 
@@ -851,47 +783,19 @@ export function FlowsManager({
         {/* Operations Tab Content */}
         {activeTab === 'operations' && (
           <>
-            {/* Operations Statistics */}
-            {sourceOperations.length > 0 && !loadingTarget && (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '1rem',
-                marginBottom: '1.5rem'
-              }}>
-                <div style={{
-                  padding: '1rem',
-                  backgroundColor: '#f8fafc',
-                  borderRadius: '6px',
-                  border: '1px solid #e2e8f0'
-                }}>
-                  <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '0.25rem' }}>Total Operations</div>
-                  <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#1e293b' }}>{sourceOperations.length}</div>
-                </div>
-                <div style={{
-                  padding: '1rem',
-                  backgroundColor: '#eff6ff',
-                  borderRadius: '6px',
-                  border: '1px solid #bfdbfe'
-                }}>
-                  <div style={{ fontSize: '0.875rem', color: '#1e40af', marginBottom: '0.25rem' }}>New</div>
-                  <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#1e40af' }}>
-                    {sourceOperations.filter(op => !targetOperations.some(to => to.id === op.id)).length}
-                  </div>
-                </div>
-                <div style={{
-                  padding: '1rem',
-                  backgroundColor: '#fffbeb',
-                  borderRadius: '6px',
-                  border: '1px solid #fde68a'
-                }}>
-                  <div style={{ fontSize: '0.875rem', color: '#92400e', marginBottom: '0.25rem' }}>Existing</div>
-                  <div style={{ fontSize: '1.5rem', fontWeight: '600', color: '#92400e' }}>
-                    {sourceOperations.filter(op => targetOperations.some(to => to.id === op.id)).length}
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Info Message */}
+            <div style={{
+              marginBottom: '1.5rem',
+              padding: '0.75rem',
+              backgroundColor: '#eff6ff',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              color: '#1e40af',
+              border: '1px solid #bfdbfe'
+            }}>
+              <strong>ℹ️ Note:</strong> Operations are now migrated together with their parent flows. 
+              Use the <strong>Flows tab</strong> to migrate flows with all their operations.
+            </div>
 
             {/* Operations Filter */}
             {sourceOperations.length > 0 && !loadingTarget && (
@@ -929,7 +833,7 @@ export function FlowsManager({
                     cursor: 'pointer',
                     fontWeight: '500',
                     border: 'none',
-                    backgroundColor: statusFilter === 'new' ? '#3b82f6' : 'white',
+                    backgroundColor: statusFilter === 'new' ? '#10B981' : 'white',
                     color: statusFilter === 'new' ? 'white' : '#1e40af'
                   }}
                 >
@@ -944,7 +848,7 @@ export function FlowsManager({
                     cursor: 'pointer',
                     fontWeight: '500',
                     border: 'none',
-                    backgroundColor: statusFilter === 'existing' ? '#3b82f6' : 'white',
+                    backgroundColor: statusFilter === 'existing' ? '#F97316' : 'white',
                     color: statusFilter === 'existing' ? 'white' : '#92400e'
                   }}
                 >
@@ -952,20 +856,6 @@ export function FlowsManager({
                 </button>
               </div>
             )}
-
-            {/* Info Message */}
-            <div style={{
-              marginBottom: '1rem',
-              padding: '0.75rem',
-              backgroundColor: '#eff6ff',
-              borderRadius: '6px',
-              fontSize: '0.875rem',
-              color: '#1e40af',
-              border: '1px solid #bfdbfe'
-            }}>
-              <strong>ℹ️ Note:</strong> Operations are now migrated together with their parent flows. 
-              Use the <strong>Flows tab</strong> to migrate flows with all their operations.
-            </div>
 
             {/* Operations List */}
             <div style={{ marginBottom: '1.5rem' }}>

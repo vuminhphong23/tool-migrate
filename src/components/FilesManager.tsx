@@ -40,7 +40,7 @@ export function FilesManager({
 
   // Load files when switching to files tab or when folder selection changes
   useEffect(() => {
-    if (activeTab === 'files' && selectedFolder !== undefined) {
+    if (activeTab === 'files') {
       loadFiles()
       loadTargetFiles()
     }
@@ -78,9 +78,10 @@ export function FilesManager({
 
   const loadTargetFiles = async () => {
     try {
-      const result = await getFiles(targetUrl, targetToken, {
-        folder: selectedFolder,
-      })
+      // If selectedFolder is undefined (all folders), don't pass folder filter
+      const options = selectedFolder === undefined ? {} : { folder: selectedFolder }
+      
+      const result = await getFiles(targetUrl, targetToken, options)
       if (result.success) {
         setTargetFiles(result.files || [])
       }
@@ -92,15 +93,17 @@ export function FilesManager({
   const loadFiles = async () => {
     setLoading(true)
     try {
-      const result = await getFiles(sourceUrl, sourceToken, {
-        folder: selectedFolder,
-      })
+      // If selectedFolder is undefined (all folders), don't pass folder filter
+      const options = selectedFolder === undefined ? {} : { folder: selectedFolder }
+      
+      const result = await getFiles(sourceUrl, sourceToken, options)
       
       if (result.success) {
         setFiles(result.files || [])
+        const folderText = selectedFolder === undefined ? 'all folders' : selectedFolder === null ? 'root folder' : 'selected folder'
         onStatusUpdate({
           type: 'success',
-          message: `Loaded ${result.files?.length || 0} files`
+          message: `Loaded ${result.files?.length || 0} files from ${folderText}`
         })
       } else {
         onStatusUpdate({
@@ -182,9 +185,35 @@ export function FilesManager({
     setProgress({ current: 0, total: selectedFiles.length })
 
     try {
+      // STEP 1: Auto-migrate ALL folders first (to ensure folder structure exists)
       onStatusUpdate({
         type: 'info',
-        message: 'Migrating files...'
+        message: 'Step 1/2: Migrating folder structure...'
+      })
+
+      console.log('🗂️ Auto-migrating all folders before files...');
+      const foldersResult = await importFolders(
+        sourceUrl,
+        sourceToken,
+        targetUrl,
+        targetToken
+        // No selectedFolderIds = migrate ALL folders
+      )
+
+      if (!foldersResult.success) {
+        throw new Error(`Failed to migrate folders: ${foldersResult.error?.message || 'Unknown error'}`);
+      }
+
+      console.log('✅ Folders migrated:', foldersResult.message);
+      console.log('📊 Folder mapping:', foldersResult.folderMapping);
+
+      // Reload target folders to show updated badges
+      await loadTargetFolders();
+
+      // STEP 2: Now migrate files with folder mapping
+      onStatusUpdate({
+        type: 'info',
+        message: 'Step 2/2: Migrating files...'
       })
 
       const result = await importFiles(
@@ -195,6 +224,7 @@ export function FilesManager({
         selectedFiles,
         {
           preserveId: true,
+          folderMapping: foldersResult.folderMapping, // Pass folder ID mapping
           onProgress: (current, total) => {
             setProgress({ current, total })
           }
@@ -270,7 +300,8 @@ export function FilesManager({
 
   const filteredFiles = files.filter(file =>
     file.filename_download?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    file.title?.toLowerCase().includes(searchTerm.toLowerCase())
+    file.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    file.id?.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
   const formatFileSize = (bytes: number): string => {
@@ -315,7 +346,7 @@ export function FilesManager({
         }}>
           <div>
             <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '600', color: '#111827' }}>
-              📁 Files & Folders Migration
+              📁 Files Migration
             </h2>
             <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.875rem', color: '#6b7280' }}>
               {activeTab === 'folders' 
@@ -425,7 +456,7 @@ export function FilesManager({
                 </label>
                 <input
                   type="text"
-                placeholder="Search files..."
+                placeholder="Search by name, title, or ID..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 style={{
@@ -519,8 +550,8 @@ export function FilesManager({
                             <span style={{
                               fontSize: '0.625rem',
                               padding: '0.125rem 0.5rem',
-                              backgroundColor: '#10b981',
-                              color: 'white',
+                              backgroundColor: '#fef3c7',
+                              color: '#92400e',
                               borderRadius: '9999px',
                               fontWeight: '600'
                             }}>
@@ -530,8 +561,8 @@ export function FilesManager({
                             <span style={{
                               fontSize: '0.625rem',
                               padding: '0.125rem 0.5rem',
-                              backgroundColor: '#3b82f6',
-                              color: 'white',
+                              backgroundColor: '#dbeafe',
+                              color: '#1e40af',
                               borderRadius: '9999px',
                               fontWeight: '600'
                             }}>
@@ -657,8 +688,8 @@ export function FilesManager({
                           <span style={{
                             fontSize: '0.5rem',
                             padding: '0.125rem 0.375rem',
-                            backgroundColor: '#10b981',
-                            color: 'white',
+                            backgroundColor: '#fef3c7',
+                            color: '#92400e',
                             borderRadius: '9999px',
                             fontWeight: '600',
                             flexShrink: 0
@@ -669,8 +700,8 @@ export function FilesManager({
                           <span style={{
                             fontSize: '0.5rem',
                             padding: '0.125rem 0.375rem',
-                            backgroundColor: '#3b82f6',
-                            color: 'white',
+                            backgroundColor: '#dbeafe',
+                            color: '#1e40af',
                             borderRadius: '9999px',
                             fontWeight: '600',
                             flexShrink: 0

@@ -618,7 +618,7 @@ export function AccessControlManager({
         overflowY: 'auto'
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-          <h2 style={{ margin: 0, color: '#7c3aed' }}>🔐 Access Control Migration</h2>
+          <h2 style={{ margin: 0, color: '#121213ff' }}>🔐 Access Control Migration</h2>
           <button
             onClick={onClose}
             style={{
@@ -651,9 +651,6 @@ export function AccessControlManager({
                   marginBottom: '1.5rem',
                   border: '1px solid #e2e8f0'
                 }}>
-                  <h3 style={{ margin: '0 0 1rem 0', color: '#1e293b', display: 'flex', alignItems: 'center' }}>
-                    📊 Source Analysis
-                  </h3>
                   
                   {/* Relationship Diagram */}
                   <div style={{ textAlign: 'center', marginBottom: '1.5rem', fontSize: '0.875rem', color: '#6b7280' }}>
@@ -949,25 +946,29 @@ export function AccessControlManager({
                                 const groupStatus = getGroupStatus(group.permissions);
                                 if (groupStatus.status === 'empty') return null;
                                 
-                                let badgeColor, badgeText;
+                                let badgeColor, badgeTextColor, badgeText;
                                 if (groupStatus.status === 'existing') {
-                                  badgeColor = '#10b981'; // green
+                                  badgeColor = '#fef3c7'; // yellow light
+                                  badgeTextColor = '#92400e'; // yellow dark
                                   badgeText = 'Existing';
                                 } else if (groupStatus.status === 'new') {
-                                  badgeColor = '#f59e0b'; // amber
+                                  badgeColor = '#dbeafe'; // blue light
+                                  badgeTextColor = '#1e40af'; // blue dark
                                   badgeText = 'New';
                                 } else {
-                                  badgeColor = '#6b7280'; // gray
+                                  badgeColor = '#e5e7eb'; // gray light
+                                  badgeTextColor = '#374151'; // gray dark
                                   badgeText = `Mixed (${groupStatus.existing}/${groupStatus.new})`;
                                 }
                                 
                                 return (
                                   <span style={{
                                     backgroundColor: badgeColor,
-                                    color: 'white',
+                                    color: badgeTextColor,
                                     padding: '0.125rem 0.5rem',
-                                    borderRadius: '12px',
-                                    fontSize: '0.75rem'
+                                    borderRadius: '9999px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: '500'
                                   }}>
                                     {badgeText}
                                   </span>
@@ -1120,10 +1121,10 @@ export function AccessControlManager({
                                       
                                       {/* Individual Permission Status Badge */}
                                       <span style={{
-                                        backgroundColor: existsInTarget ? '#f97316' : '#10b981',
-                                        color: 'white',
+                                        backgroundColor: existsInTarget ? '#fef3c7' : '#dbeafe',
+                                        color: existsInTarget ? '#92400e' : '#1e40af',
                                         padding: '0.25rem 0.5rem',
-                                        borderRadius: '12px',
+                                        borderRadius: '9999px',
                                         fontSize: '0.75rem',
                                         fontWeight: '500',
                                         marginLeft: '0.5rem'
@@ -1300,11 +1301,12 @@ export function AccessControlManager({
                               </div>
                             </div>
                             <span style={{
-                              backgroundColor: getPolicyStatus(policy) === 'Admin' ? '#dc2626' : getPolicyStatus(policy) === 'New' ? '#10b981' : '#f97316',
-                              color: 'white',
+                              backgroundColor: getPolicyStatus(policy) === 'Admin' ? '#dc2626' : getPolicyStatus(policy) === 'New' ? '#dbeafe' : '#fef3c7',
+                              color: getPolicyStatus(policy) === 'Admin' ? 'white' : getPolicyStatus(policy) === 'New' ? '#1e40af' : '#92400e',
                               padding: '0.25rem 0.5rem',
-                              borderRadius: '12px',
-                              fontSize: '0.75rem'
+                              borderRadius: '9999px',
+                              fontSize: '0.75rem',
+                              fontWeight: '500'
                             }}>
                               {getPolicyStatus(policy)}
                             </span>
@@ -1436,11 +1438,12 @@ export function AccessControlManager({
                               </div>
                             </div>
                             <span style={{
-                              backgroundColor: getRoleStatus(role) === 'Admin' ? '#dc2626' : getRoleStatus(role) === 'New' ? '#10b981' : '#f97316',
-                              color: 'white',
+                              backgroundColor: getRoleStatus(role) === 'Admin' ? '#dc2626' : getRoleStatus(role) === 'New' ? '#dbeafe' : '#fef3c7',
+                              color: getRoleStatus(role) === 'Admin' ? 'white' : getRoleStatus(role) === 'New' ? '#1e40af' : '#92400e',
                               padding: '0.25rem 0.5rem',
-                              borderRadius: '12px',
-                              fontSize: '0.75rem'
+                              borderRadius: '9999px',
+                              fontSize: '0.75rem',
+                              fontWeight: '500'
                             }}>
                               {getRoleStatus(role)}
                             </span>
@@ -1449,52 +1452,6 @@ export function AccessControlManager({
                       ))}
                     </div>
                   </div>
-
-                {/* Migration Settings */}
-                <div style={{ 
-                  backgroundColor: '#f8fafc', 
-                  padding: '1.5rem', 
-                  borderRadius: '8px', 
-                  marginBottom: '1.5rem',
-                  border: '1px solid #e2e8f0'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <h3 style={{ margin: 0, display: 'flex', alignItems: 'center' }}>
-                      ⚙️ Migration Settings
-                    </h3>
-                    <span style={{ fontSize: '0.875rem', color: '#6b7280', cursor: 'pointer' }}>
-                      ▶ Advanced Options
-                    </span>
-                  </div>
-                  
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={migrationOptions.roles?.skipAdminRoles || false}
-                        onChange={(e) => setMigrationOptions(prev => ({
-                          ...prev,
-                          roles: { ...prev.roles, skipAdminRoles: e.target.checked }
-                        }))}
-                        style={{ marginRight: '0.75rem' }}
-                      />
-                      <span>Skip admin roles <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>(recommended for security)</span></span>
-                    </label>
-                    
-                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={migrationOptions.policies?.skipAdminPolicies || false}
-                        onChange={(e) => setMigrationOptions(prev => ({
-                          ...prev,
-                          policies: { ...prev.policies, skipAdminPolicies: e.target.checked }
-                        }))}
-                        style={{ marginRight: '0.75rem' }}
-                      />
-                      <span>Skip admin policies <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>(recommended for security)</span></span>
-                    </label>
-                  </div>
-                </div>
                 
                 {/* Migration Results Summary */}
                 {migrationResults && (

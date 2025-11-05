@@ -845,62 +845,19 @@ export async function getAllCollections(
   error?: any;
 }> {
   try {
-    const defaultExcludePatterns = [
-      "_translations",
-      "_languages", 
-      "_extensions",
-      // "_operations",     // Enable operations for flows
-      "_shares",
-      "_fields",
-      "_migrations",
-      "_versions",
-      "_notifications",
-      "_sessions",
-      "_sync_id",
-      // Make directus_ exclusion more specific to allow flows and operations
-      "directus_activity",
-      "directus_collections",
-      "directus_dashboards",
-      "directus_fields",
-      "directus_files",
-      "directus_folders",
-      "directus_migrations",
-      "directus_notifications",
-      "directus_panels",
-      // "directus_permissions",  // Enable for access control migration
-      "directus_presets",
-      // "directus_policies",     // Enable for access control migration
-      "directus_relations",
-      "directus_revisions",
-      // "directus_roles",        // Enable for access control migration
-      "directus_sessions",
-      "directus_settings",
-      "directus_shares",
-      "directus_translations",
-      "directus_users",
-      "directus_versions",
-      "directus_webhooks",
-      // Allow directus_flows, directus_operations, directus_roles, directus_policies, directus_permissions
-    ];
-
-    const patternsToExclude = excludePatterns || defaultExcludePatterns;
     const client = new DirectusClient(baseUrl, token);
-
     const response = await client.get("/collections");
     const allCollections = response.data || [];
 
-    // Filter out system collections and folders
-    const filteredCollections = allCollections.filter((collection: any) => {
-      const isExcluded = patternsToExclude.some((pattern: string) =>
-        collection.collection.includes(pattern),
-      );
-      const isFolder = collection.meta?.is_folder;
-      return !isExcluded && !isFolder;
-    });
+    console.log('📦 getAllCollections - All collections from API:', allCollections.length);
+    console.log('  System collections:', allCollections.filter((c: any) => c.collection?.startsWith('directus_')).length);
+    console.log('  Custom collections:', allCollections.filter((c: any) => !c.collection?.startsWith('directus_')).length);
 
+    // Return ALL collections - no filtering
+    // User can toggle system collections visibility in UI
     return {
       success: true,
-      collections: filteredCollections,
+      collections: allCollections,
     };
   } catch (error: any) {
     return {

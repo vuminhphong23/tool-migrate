@@ -25,10 +25,12 @@ export function CollectionList({
   sourceToken,
   targetUrl,
   targetToken,
-  onStatusUpdate,
+  onStatusUpdate: _onStatusUpdate, // Ignore status updates - will use inline notifications
   loading,
   setLoading
 }: CollectionListProps) {
+  // Empty function to replace all onStatusUpdate calls
+  const onStatusUpdate = (_status: any) => {};
   const [importLimit, setImportLimit] = useState<number | null>(null)
   const [titleFilter, setTitleFilter] = useState<string>('')
   const [showFlowsManager, setShowFlowsManager] = useState(false)
@@ -55,6 +57,7 @@ export function CollectionList({
   const [selectedSchemaCollections, setSelectedSchemaCollections] = useState<string[]>([])
   const [schemaCollectionFilter, setSchemaCollectionFilter] = useState<string>('')
   const [collapsedFieldDetails, setCollapsedFieldDetails] = useState<Record<string, boolean>>({})
+  const [migratedCollections, setMigratedCollections] = useState<string[]>([])
   
   // Item Selector states
   const [showItemSelector, setShowItemSelector] = useState(false)
@@ -64,6 +67,7 @@ export function CollectionList({
   const [previewOffset, setPreviewOffset] = useState<number>(0)
   const [selectedItemIds, setSelectedItemIds] = useState<(string | number)[]>([])
   const [loadingPreview, setLoadingPreview] = useState(false)
+  const [sourceRelations, setSourceRelations] = useState<any[]>([])
   
   // Load target collections for comparison
   const loadTargetCollections = async () => {
@@ -97,81 +101,53 @@ export function CollectionList({
     }
   }, [targetUrl, targetToken]);
 
-  // Schema Migration Functions
+  // Load source relations for data migration
+  React.useEffect(() => {
+    const loadSourceRelations = async () => {
+      try {
+        const result = await getRelations(sourceUrl, sourceToken);
+        if (result.success && result.relations) {
+          setSourceRelations(result.relations);
+        }
+      } catch (error) {
+        // Silent fail
+      }
+    };
+
+    if (sourceUrl && sourceToken) {
+      loadSourceRelations();
+    }
+  }, [sourceUrl, sourceToken]);
+
+  // ========================================
+  // Schema Migration Functions (Simplified - Following Directus API Docs)
+  // ========================================
+  
   const handleSchemaSnapshot = async () => {
     setSchemaMigrationStep('snapshot');
     setLoading('schema_snapshot', true);
     
     try {
-      const client = await import('../lib/DirectusClient').then(m => m.DirectusClient);
-      const sourceClient = new client(sourceUrl, sourceToken);
+      const { DirectusClient } = await import('../lib/DirectusClient');
+      const sourceClient = new DirectusClient(sourceUrl, sourceToken);
       
       const response = await sourceClient.get('/schema/snapshot');
-      // Extract the actual schema data (remove the "data" wrapper)
-      const schemaData = response.data;
+      const snapshot = response.data || response;
       
-      // Log snapshot details
-      console.log('\n📸 Schema Snapshot from Source:', {
-        totalCollections: Object.keys(schemaData?.collections || {}).length,
-        totalFields: Object.keys(schemaData?.fields || {}).length,
-        totalRelations: (schemaData?.relations || []).length,
-        collections: Object.keys(schemaData?.collections || {}),
-        snapshot: schemaData
-      });
+      if (!snapshot || !Array.isArray(snapshot.collections)) {
+        throw new Error('Invalid snapshot response');
+      }
       
-      // Log each collection's schema and validation
-      console.log('\n🗂️ Collection Details:');
-      Object.entries(schemaData?.collections || {}).forEach(([collectionName, collectionData]: [string, any]) => {
-        console.log(`\n  Collection: ${collectionName}`);
-        console.log('  - Schema:', collectionData.schema);
-        console.log('  - Meta:', collectionData.meta);
-        if (collectionData.schema?.validation || collectionData.meta?.validation) {
-          console.log('  - Validation:', {
-            schema_validation: collectionData.schema?.validation,
-            meta_validation: collectionData.meta?.validation
-          });
-        }
-      });
-      
-      // Log field details with metadata
-      console.log('\n🔤 Field Details from Snapshot:');
-      Object.entries(schemaData?.fields || {}).forEach(([collectionName, fields]: [string, any]) => {
-        if (collectionName === 'timeline') {
-          console.log(`\n  Collection: ${collectionName}`);
-          const fieldsArray = Array.isArray(fields) ? fields : Object.values(fields || {});
-          fieldsArray.forEach((field: any) => {
-            console.log(`\n    Field: ${field.field}`);
-            console.log('    - Type:', field.type);
-            console.log('    - Schema:', field.schema);
-            console.log('    - Meta:', field.meta);
-            if (field.meta) {
-              console.log('    - Meta Details:', {
-                required: field.meta.required,
-                readonly: field.meta.readonly,
-                hidden: field.meta.hidden,
-                interface: field.meta.interface,
-                validation: field.meta.validation,
-                validation_message: field.meta.validation_message
-              });
-            }
-          });
-        }
-      });
-      
-      setSchemaSnapshot(schemaData);
-      
-      onStatusUpdate({ 
-        type: 'success', 
-        message: `Schema snapshot retrieved from source (${Object.keys(schemaData?.collections || {}).length} collections)` 
-      });
-      
+      setSchemaSnapshot(snapshot);
       setSchemaMigrationStep('diff');
+      
+      onStatusUpdate({
+        type: 'success',
+        message: `✅ Snapshot: ${snapshot.collections.length} collections, ${snapshot.fields?.length || 0} fields`
+      });
     } catch (error: any) {
       logError('Schema Snapshot', error);
-      onStatusUpdate({ 
-        type: 'error', 
-        message: `Failed to retrieve schema snapshot: ${error.message}` 
-      });
+      onStatusUpdate({ type: 'error', message: `❌ Snapshot failed: ${error.message}` });
       setSchemaMigrationStep('idle');
     } finally {
       setLoading('schema_snapshot', false);
@@ -181,655 +157,61 @@ export function CollectionList({
   const handleSchemaDiff = async () => {
     if (!schemaSnapshot) return;
     
-    console.log('\n\n🚀🚀🚀 ===== SCHEMA DIFF STARTED - CODE VERSION: 2024-11-04 =====  🚀🚀🚀\n');
-    
     setSchemaMigrationStep('diff');
     setLoading('schema_diff', true);
     
     try {
-      const client = await import('../lib/DirectusClient').then(m => m.DirectusClient);
-      const targetClient = new client(targetUrl, targetToken);
+      const { DirectusClient } = await import('../lib/DirectusClient');
+      const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      // Filter out system collections (starting with "directus_") from the snapshot
-      // Convert collections and fields from object to array format as required by /schema/diff API
-      const filteredSnapshot = {
-        ...schemaSnapshot,
-        collections: Object.entries(schemaSnapshot.collections || {})
-          .filter(([collectionName]) => !collectionName.startsWith('directus_'))
-          .map(([_, collectionData]) => collectionData),
-        fields: Object.entries(schemaSnapshot.fields || {})
-          .filter(([collectionName]) => !collectionName.startsWith('directus_'))
-          .flatMap(([_, fields]) => fields),
-        relations: (schemaSnapshot.relations || []).filter((relation: any) => {
-          // Keep relations where at least one side is a non-system collection
-          // This allows relations TO system collections (e.g., user_created -> directus_users)
-          const isCollectionSystem = relation.collection?.startsWith('directus_');
-          const isRelatedCollectionSystem = relation.related_collection?.startsWith('directus_');
-          
-          // Include if at least one side is NOT a system collection
-          return !isCollectionSystem || !isRelatedCollectionSystem;
-        })
-      };
+      // POST snapshot to /schema/diff?force=true to bypass version check
+      const response = await targetClient.post('/schema/diff?force=true', schemaSnapshot);
+      const diffResult = response.data || response;
       
-      // Log filtered snapshot being sent
-      console.log('\n📤 Filtered Snapshot (to be sent to target):', {
-        collectionsCount: filteredSnapshot.collections?.length || 0,
-        fieldsCount: filteredSnapshot.fields?.length || 0,
-        relationsCount: filteredSnapshot.relations?.length || 0,
-        collectionNames: filteredSnapshot.collections?.map((c: any) => c.collection) || [],
-        filteredSnapshot: filteredSnapshot
-      });
-      
-      // Log timeline fields specifically to check if metadata is preserved
-      const timelineFields = filteredSnapshot.fields?.filter((f: any) => f.collection === 'timeline');
-      if (timelineFields && timelineFields.length > 0) {
-        console.log('\n🔍 Timeline Fields Being Sent to Target:');
-        timelineFields.forEach((field: any) => {
-          console.log(`\n  Field: ${field.field}`);
-          console.log('  - Has meta?', !!field.meta);
-          console.log('  - Full field object:', field);
-          if (field.meta) {
-            console.log('  - Meta.required:', field.meta.required);
-            console.log('  - Meta.readonly:', field.meta.readonly);
-            console.log('  - Meta.hidden:', field.meta.hidden);
-          }
-        });
+      if (!diffResult || !diffResult.diff || !diffResult.hash) {
+        throw new Error('Invalid diff response');
       }
       
-      // Check payload size before sending
-      const payloadSize = new Blob([JSON.stringify(filteredSnapshot)]).size;
-      const payloadSizeMB = (payloadSize / (1024 * 1024)).toFixed(2);
+      setSchemaDiff(diffResult);
       
-      console.log(`\n📎 Payload size: ${payloadSizeMB}MB`);
+      // Count changes
+      const collectionsCount = diffResult.diff.collections?.length || 0;
+      const fieldsCount = diffResult.diff.fields?.length || 0;
+      const relationsCount = diffResult.diff.relations?.length || 0;
+      const totalChanges = collectionsCount + fieldsCount + relationsCount;
       
-      // Warn if payload is large (> 10MB)
-      if (payloadSize > 10 * 1024 * 1024) {
-        onStatusUpdate({ 
-          type: 'warning', 
-          message: `Large schema detected (${payloadSizeMB}MB). This may take longer or fail if target has size limits.` 
-        });
-      }
-      
-      const response = await targetClient.post('/schema/diff?force=true', filteredSnapshot);
-      
-      // Log raw response structure
-      console.log('📦 Raw API Response:', response);
-      
-      // Extract the actual diff data (remove the "data" wrapper)
-      let diffData = response.data;
-      
-      // WORKAROUND: Directus /schema/diff might not detect metadata-only changes properly
-      // Manually check for metadata differences and add them to the diff
-      console.log('\n🔧 Checking for metadata-only changes...');
-      
-      // Get the target schema snapshot to compare
-      const targetSnapshotResponse = await targetClient.get('/schema/snapshot');
-      const targetSnapshot = targetSnapshotResponse.data;
-      
-      // Compare field metadata between source and target
-      const sourceFields = filteredSnapshot.fields || [];
-      const targetFieldsMap = new Map();
-      
-      // Build map of target fields for quick lookup
-      Object.entries(targetSnapshot.fields || {}).forEach(([collectionName, fields]: [string, any]) => {
-        const fieldsArray = Array.isArray(fields) ? fields : Object.values(fields || {});
-        fieldsArray.forEach((field: any) => {
-          targetFieldsMap.set(`${field.collection}.${field.field}`, field);
-        });
-      });
-      
-      // Find fields with metadata differences
-      const metadataOnlyChanges: any[] = [];
-      sourceFields.forEach((sourceField: any) => {
-        const fieldKey = `${sourceField.collection}.${sourceField.field}`;
-        const targetField = targetFieldsMap.get(fieldKey);
-        
-        if (targetField) {
-          // Check if metadata differs
-          const sourceMeta = sourceField.meta || {};
-          const targetMeta = targetField.meta || {};
-          
-          // Build detailed list of differences
-          const differences: string[] = [];
-          if (sourceMeta.required !== targetMeta.required) {
-            differences.push(`required: ${targetMeta.required} → ${sourceMeta.required}`);
-          }
-          if (sourceMeta.readonly !== targetMeta.readonly) {
-            differences.push(`readonly: ${targetMeta.readonly} → ${sourceMeta.readonly}`);
-          }
-          if (sourceMeta.hidden !== targetMeta.hidden) {
-            differences.push(`hidden: ${targetMeta.hidden} → ${sourceMeta.hidden}`);
-          }
-          if (sourceMeta.interface !== targetMeta.interface) {
-            differences.push(`interface: ${targetMeta.interface} → ${sourceMeta.interface}`);
-          }
-          if (JSON.stringify(sourceMeta.options) !== JSON.stringify(targetMeta.options)) {
-            differences.push(`options: ${JSON.stringify(targetMeta.options)} → ${JSON.stringify(sourceMeta.options)}`);
-          }
-          if (sourceMeta.display !== targetMeta.display) {
-            differences.push(`display: ${targetMeta.display} → ${sourceMeta.display}`);
-          }
-          if (JSON.stringify(sourceMeta.display_options) !== JSON.stringify(targetMeta.display_options)) {
-            differences.push(`display_options: ${JSON.stringify(targetMeta.display_options)} → ${JSON.stringify(sourceMeta.display_options)}`);
-          }
-          if (sourceMeta.note !== targetMeta.note) {
-            differences.push(`note: ${targetMeta.note} → ${sourceMeta.note}`);
-          }
-          if (sourceMeta.special !== targetMeta.special) {
-            differences.push(`special: ${targetMeta.special} → ${sourceMeta.special}`);
-          }
-          if (sourceMeta.validation !== targetMeta.validation) {
-            differences.push(`validation: ${targetMeta.validation} → ${sourceMeta.validation}`);
-          }
-          if (sourceMeta.validation_message !== targetMeta.validation_message) {
-            differences.push(`validation_message: ${targetMeta.validation_message} → ${sourceMeta.validation_message}`);
-          }
-          
-          const metaChanged = differences.length > 0;
-          
-          if (metaChanged) {
-            console.log(`  ✓ Metadata difference found: ${fieldKey}`);
-            console.log(`    Differences (${differences.length}):`);
-            differences.forEach(diff => console.log(`      - ${diff}`));
-            console.log(`    Full comparison:`, {
-              source: sourceMeta,
-              target: targetMeta
-            });
-            
-            // Check if this field is already in the diff
-            const existingInDiff = (diffData.diff?.fields || []).find((f: any) => 
-              f.collection === sourceField.collection && f.field === sourceField.field
-            );
-            
-            if (!existingInDiff) {
-              // Add to metadata-only changes with detailed diff info
-              metadataOnlyChanges.push({
-                collection: sourceField.collection,
-                field: sourceField.field,
-                type: sourceField.type,
-                schema: sourceField.schema,
-                meta: sourceField.meta,
-                diff: [{
-                  kind: 'E', // Edit
-                  path: ['meta'],
-                  lhs: targetMeta,
-                  rhs: sourceMeta,
-                  differences: differences // Store detailed differences
-                }]
-              });
-              
-              // Special log for timeline collection
-              if (sourceField.collection === 'timeline') {
-                console.log(`    ✅ Added timeline.${sourceField.field} to metadata changes`);
-              }
-            } else {
-              if (sourceField.collection === 'timeline') {
-                console.log(`    ℹ️ timeline.${sourceField.field} already in diff from API`);
-              }
-            }
-          }
-        }
-      });
-      
-      // Add metadata-only changes to the diff
-      if (metadataOnlyChanges.length > 0) {
-        console.log(`\n📝 Adding ${metadataOnlyChanges.length} metadata-only changes to diff`);
-        diffData = {
-          ...diffData,
-          diff: {
-            ...diffData.diff,
-            fields: [...(diffData.diff?.fields || []), ...metadataOnlyChanges]
-          }
-        };
-      } else {
-        console.log('\n✓ No additional metadata-only changes found');
-      }
-      
-      // DEBUG: Check diff data before filtering
-      console.log('\n🔍 DEBUG: About to filter differences. Current state:', {
-        hasFields: !!(diffData?.diff?.fields),
-        fieldsCount: diffData?.diff?.fields?.length || 0,
-        firstField: diffData?.diff?.fields?.[0],
-        diffDataStructure: diffData
-      });
-      
-      // FILTER OUT INSIGNIFICANT DIFFERENCES
-      // These are differences caused by different database engines, not actual schema differences
-      console.log('\n🧹 Filtering out insignificant differences...');
-      console.log('   Starting with', diffData?.diff?.fields?.length || 0, 'field differences');
-      
-      const isInsignificantDiff = (diffItem: any): boolean => {
-        const path = diffItem.path?.join('.') || '';
-        const pathArray = diffItem.path || [];
-        
-        // METADATA FILTER: Ignore all metadata-only changes
-        // Metadata changes cannot be applied via /schema/apply API anyway
-        // Only keep schema structure changes (data_type, nullable, etc.)
-        
-        // Filter 1: Ignore all 'meta' object changes
-        if (pathArray[0] === 'meta') {
-          console.log(`  ⏭️  Ignoring metadata change: ${path} (metadata-only)`);
-          return true;
-        }
-        
-        // Filter 2: Ignore top-level Directus field metadata that doesn't affect data structure
-        const metadataOnlyFields = [
-          'collection', 'field', 'type', // Identifiers (shouldn't change)
-          'note', 'sort', 'group', 'hidden', 'readonly', 'required', // UI metadata
-          'interface', 'display', 'options', 'display_options', // UI configuration
-          'validation', 'validation_message', 'conditions', // Validation rules
-          'translations', 'special' // Other metadata
-        ];
-        
-        if (pathArray.length === 1 && metadataOnlyFields.includes(pathArray[0])) {
-          console.log(`  ⏭️  Ignoring field metadata: ${path} (UI configuration)`);
-          return true;
-        }
-        
-        // 1. Ignore varchar vs character varying (same type, different DB names)
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          const normalized_lhs = lhs === 'varchar' ? 'character varying' : lhs === 'character varying' ? 'varchar' : lhs;
-          const normalized_rhs = rhs === 'varchar' ? 'character varying' : rhs === 'character varying' ? 'varchar' : rhs;
-          if (normalized_lhs === normalized_rhs || 
-              (lhs === 'varchar' && rhs === 'character varying') || 
-              (lhs === 'character varying' && rhs === 'varchar')) {
-            console.log(`  ⏭️  Ignoring data_type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 2. Ignore numeric_precision and numeric_scale differences when one is null
-        // These are metadata differences between DB engines that don't affect functionality
-        if (path === 'schema.numeric_precision' || path === 'schema.numeric_scale') {
-          if (diffItem.lhs === null || diffItem.rhs === null) {
-            console.log(`  ⏭️  Ignoring ${path}: ${diffItem.lhs} ↔ ${diffItem.rhs} (DB engine metadata difference)`);
-            return true;
-          }
-        }
-        
-        // 3. Ignore datetime vs timestamp (same type, different DB names)
-        // MySQL/SQLite: datetime, PostgreSQL: timestamp/timestamp with time zone
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          const datetimeTypes = ['datetime', 'timestamp', 'timestamp with time zone', 'timestamp without time zone'];
-          if (datetimeTypes.includes(lhs) && datetimeTypes.includes(rhs)) {
-            console.log(`  ⏭️  Ignoring datetime type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 4. Ignore text vs varchar (when max_length is large or null)
-        // These are essentially the same for large text fields
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          if ((lhs === 'text' && rhs === 'varchar') || (lhs === 'varchar' && rhs === 'text')) {
-            console.log(`  ⏭️  Ignoring text/varchar difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 5. Ignore integer type variations (int, integer, bigint when they're equivalent)
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          // int, integer, int4 are all same in PostgreSQL
-          const intTypes = ['int', 'integer', 'int4'];
-          if (intTypes.includes(lhs) && intTypes.includes(rhs)) {
-            console.log(`  ⏭️  Ignoring integer type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 6. Ignore boolean type variations
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          const boolTypes = ['boolean', 'bool', 'tinyint'];
-          if (boolTypes.includes(lhs) && boolTypes.includes(rhs)) {
-            console.log(`  ⏭️  Ignoring boolean type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 7. Ignore json vs jsonb (PostgreSQL specific)
-        if (path === 'schema.data_type') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          if ((lhs === 'json' && rhs === 'jsonb') || (lhs === 'jsonb' && rhs === 'json')) {
-            console.log(`  ⏭️  Ignoring json type difference: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        // 8. Ignore top-level dateTime field differences (Directus field type metadata)
-        // This handles path like ['dateTime'] instead of ['schema', 'data_type']
-        if (path === 'dateTime') {
-          const lhs = diffItem.lhs;
-          const rhs = diffItem.rhs;
-          const datetimeTypes = ['dateTime', 'timestamp', 'timestamp with time zone', 'timestamp without time zone'];
-          if (datetimeTypes.includes(lhs) && datetimeTypes.includes(rhs)) {
-            console.log(`  ⏭️  Ignoring dateTime metadata: ${lhs} ↔ ${rhs} (equivalent types)`);
-            return true;
-          }
-        }
-        
-        return false;
-      };
-      
-      // Check if a field's diffs are all UUID-related (char(36) <-> uuid normalization)
-      const isUUIDNormalization = (fieldDiffs: any[]): boolean => {
-        if (!fieldDiffs || fieldDiffs.length === 0) return false;
-        
-        // Check if this is a UUID field normalization scenario:
-        // - type: string <-> uuid
-        // - schema.data_type: char <-> uuid
-        // - schema.max_length: 36 <-> null
-        
-        const hasTypeStringUuid = fieldDiffs.some((d: any) => 
-          d.path?.join('.') === 'type' && 
-          ((d.lhs === 'string' && d.rhs === 'uuid') || (d.lhs === 'uuid' && d.rhs === 'string'))
-        );
-        
-        const hasDataTypeCharUuid = fieldDiffs.some((d: any) => 
-          d.path?.join('.') === 'schema.data_type' && 
-          ((d.lhs === 'char' && d.rhs === 'uuid') || (d.lhs === 'uuid' && d.rhs === 'char'))
-        );
-        
-        const hasMaxLength36 = fieldDiffs.some((d: any) => 
-          d.path?.join('.') === 'schema.max_length' && 
-          ((d.lhs === 36 && d.rhs === null) || (d.lhs === null && d.rhs === 36))
-        );
-        
-        // If we have the characteristic UUID normalization pattern
-        if (hasTypeStringUuid && hasDataTypeCharUuid) {
-          return true;
-        }
-        
-        return false;
-      };
-      
-      // Filter fields: remove fields where ALL diffs are insignificant
-      if (diffData?.diff?.fields) {
-        const originalFieldsCount = diffData.diff.fields.length;
-        diffData.diff.fields = diffData.diff.fields.filter((field: any) => {
-          if (!field.diff || !Array.isArray(field.diff)) return true;
-          
-          // Check if this is a UUID normalization field (char(36) vs uuid)
-          if (isUUIDNormalization(field.diff)) {
-            console.log(`  🗑️  Removed field ${field.collection}.${field.field} (UUID normalization: char(36) ↔ uuid)`);
-            return false;
-          }
-          
-          // Filter out insignificant diffs from this field
-          const significantDiffs = field.diff.filter((d: any) => !isInsignificantDiff(d));
-          
-          if (significantDiffs.length === 0) {
-            console.log(`  🗑️  Removed field ${field.collection}.${field.field} (all diffs insignificant)`);
-            return false; // Remove this field entirely
-          }
-          
-          // Update field with only significant diffs
-          field.diff = significantDiffs;
-          return true;
-        });
-        
-        const removedCount = originalFieldsCount - diffData.diff.fields.length;
-        console.log(`\n📊 Filtering complete:`, {
-          originalCount: originalFieldsCount,
-          finalCount: diffData.diff.fields.length,
-          removedCount: removedCount
-        });
-        if (removedCount > 0) {
-          console.log(`✅ Filtered out ${removedCount} field(s) with insignificant differences`);
-        } else {
-          console.log(`ℹ️ No fields were filtered (all differences are significant)`);
-        }
-      }
-      
-      // Filter collections: remove directus_sync_id_map and other internal collections
-      if (diffData?.diff?.collections) {
-        const originalCollectionsCount = diffData.diff.collections.length;
-        diffData.diff.collections = diffData.diff.collections.filter((col: any) => {
-          // Remove directus system collections that might appear in diff
-          if (col.collection?.startsWith('directus_')) {
-            console.log(`  🗑️  Removed system collection: ${col.collection}`);
-            return false;
-          }
-          return true;
-        });
-        
-        const removedCount = originalCollectionsCount - diffData.diff.collections.length;
-        if (removedCount > 0) {
-          console.log(`\n✅ Filtered out ${removedCount} system collection(s)`);
-        }
-      }
-      
-      // Log the full diff response for debugging
-      console.log('📊 Schema Diff Response:', {
-        fullResponse: diffData,
-        diffObject: diffData?.diff,
-        hash: diffData?.hash,
-        responseType: typeof diffData,
-        hasData: !!diffData,
-        hasDiff: !!(diffData?.diff),
-        diffKeys: diffData?.diff ? Object.keys(diffData.diff) : []
-      });
-      
-      // Check if response structure is as expected
-      if (!diffData) {
-        console.warn('⚠️ Warning: diffData is null or undefined');
-      } else if (!diffData.diff) {
-        console.warn('⚠️ Warning: diffData.diff is null or undefined. Full diffData:', diffData);
-      } else if (typeof diffData.diff !== 'object') {
-        console.warn('⚠️ Warning: diffData.diff is not an object. Type:', typeof diffData.diff);
-      }
-      
-      // Log differences by type
-      if (diffData?.diff) {
-        console.log('\n📋 Collections Differences:', {
-          count: diffData.diff.collections?.length || 0,
-          collections: diffData.diff.collections || []
-        });
-        
-        // Check structure of first collection
-        if (diffData.diff.collections?.length > 0) {
-          const firstCol = diffData.diff.collections[0];
-          console.log('\n🔍 First Collection Structure:', {
-            collection: firstCol.collection,
-            hasDiffArray: Array.isArray(firstCol.diff),
-            hasAction: 'action' in firstCol,
-            diffArrayLength: firstCol.diff?.length,
-            firstDiff: firstCol.diff?.[0],
-            allKeys: Object.keys(firstCol)
-          });
-        }
-        
-        console.log('\n🔤 Fields Differences:', {
-          count: diffData.diff.fields?.length || 0,
-          fields: diffData.diff.fields || []
-        });
-        
-        // Check structure of first field
-        if (diffData.diff.fields?.length > 0) {
-          const firstField = diffData.diff.fields[0];
-          console.log('\n🔍 First Field Structure:', {
-            collection: firstField.collection,
-            field: firstField.field,
-            hasDiffArray: Array.isArray(firstField.diff),
-            hasAction: 'action' in firstField,
-            diffArrayLength: firstField.diff?.length,
-            firstDiff: firstField.diff?.[0],
-            diffKind: firstField.diff?.[0]?.kind,
-            hasRhs: !!firstField.diff?.[0]?.rhs,
-            hasLhs: !!firstField.diff?.[0]?.lhs,
-            allKeys: Object.keys(firstField)
-          });
-        }
-        
-        console.log('\n🔗 Relations Differences:', {
-          count: diffData.diff.relations?.length || 0,
-          relations: diffData.diff.relations || []
-        });
-      }
-      
-      // Log schema validation differences for each collection
-      if (diffData?.diff?.collections) {
-        console.log('\n🔍 Detailed Collection Schema Analysis:');
-        diffData.diff.collections.forEach((col: any, index: number) => {
-          console.log(`\n  Collection ${index + 1}: ${col.collection || 'N/A'}`);
-          console.log('  - Action:', col.action || 'N/A');
-          console.log('  - Schema:', col.schema || 'N/A');
-          console.log('  - Meta:', col.meta || 'N/A');
-          
-          // Log validation rules if present
-          if (col.schema?.validation || col.meta?.validation) {
-            console.log('  - Validation Rules:', {
-              schema_validation: col.schema?.validation,
-              meta_validation: col.meta?.validation
-            });
-          }
-        });
-      }
-      
-      // Log detailed field-level differences
-      if (diffData?.diff?.fields) {
-        console.log('\n🔤 Detailed Field Analysis:');
-        const fieldsByCollection: Record<string, any[]> = {};
-        
-        // Group fields by collection
-        diffData.diff.fields.forEach((field: any) => {
-          const collectionName = field.collection || 'unknown';
-          if (!fieldsByCollection[collectionName]) {
-            fieldsByCollection[collectionName] = [];
-          }
-          fieldsByCollection[collectionName].push(field);
-        });
-        
-        // Log fields by collection
-        Object.entries(fieldsByCollection).forEach(([collectionName, fields]) => {
-          console.log(`\n  Collection: ${collectionName} (${fields.length} field changes)`);
-          fields.forEach((field: any, index: number) => {
-            console.log(`\n    Field ${index + 1}: ${field.field || 'N/A'}`);
-            console.log('    - Action:', field.action || 'N/A');
-            console.log('    - Type:', field.type || 'N/A');
-            console.log('    - Schema:', field.schema || 'N/A');
-            console.log('    - Meta:', field.meta || 'N/A');
-            
-            // Log validation differences
-            if (field.schema?.validation || field.meta?.validation) {
-              console.log('    - Validation:', {
-                schema_validation: field.schema?.validation,
-                meta_validation: field.meta?.validation
-              });
-            }
-            
-            // Log field constraints
-            if (field.schema) {
-              console.log('    - Constraints:', {
-                nullable: field.schema.is_nullable,
-                unique: field.schema.is_unique,
-                primary_key: field.schema.is_primary_key,
-                default_value: field.schema.default_value,
-                max_length: field.schema.max_length
-              });
-            }
-            
-            // Special logging for timeline fields
-            if (collectionName === 'timeline') {
-              console.log('    - Timeline Field Full Diff:', {
-                hasDiff: !!field.diff,
-                diffArray: field.diff,
-                fullField: field
-              });
-            }
-          });
-        });
-        
-        // Check if timeline fields are in the diff at all
-        const timelineFieldsInDiff = diffData.diff.fields.filter((f: any) => f.collection === 'timeline');
-        console.log('\n🎯 Timeline Fields in Diff:', {
-          count: timelineFieldsInDiff.length,
-          fields: timelineFieldsInDiff.map((f: any) => ({
-            field: f.field,
-            hasMeta: !!f.meta,
-            metaRequired: f.meta?.required,
-            diff: f.diff
-          }))
-        });
-      } else {
-        console.log('\n⚠️ No field differences found in diff response');
-      }
-      
-      // Compare source and target schemas
-      console.log('\n⚖️ Schema Comparison Summary:');
-      console.log('Source collections sent:', filteredSnapshot.collections?.length || 0);
-      console.log('Differences found:', {
-        collections: diffData?.diff?.collections?.length || 0,
-        fields: diffData?.diff?.fields?.length || 0,
-        relations: diffData?.diff?.relations?.length || 0
-      });
-      
-      setSchemaDiff(diffData);
-      
-      // Check if there are actual items in collections, fields, or relations arrays
-      const hasChanges = diffData?.diff && (
-        (diffData.diff.collections?.length || 0) > 0 ||
-        (diffData.diff.fields?.length || 0) > 0 ||
-        (diffData.diff.relations?.length || 0) > 0
-      );
-      
-      if (hasChanges) {
-        // Collect all unique collection names from collections, fields, and relations
-        const collectionSet = new Set<string>();
-        
-        // Add from collections array
-        (diffData.diff.collections || []).forEach((col: any) => {
-          if (col.collection && !col.collection.startsWith('directus_')) {
-            collectionSet.add(col.collection);
-          }
-        });
-        
-        // Add from fields array (important for collections with only field changes)
-        (diffData.diff.fields || []).forEach((field: any) => {
-          if (field.collection && !field.collection.startsWith('directus_')) {
-            collectionSet.add(field.collection);
-          }
-        });
-        
-        // Add from relations array
-        (diffData.diff.relations || []).forEach((rel: any) => {
-          if (rel.collection && !rel.collection.startsWith('directus_')) {
-            collectionSet.add(rel.collection);
-          }
-          if (rel.related_collection && !rel.related_collection.startsWith('directus_')) {
-            collectionSet.add(rel.related_collection);
-          }
-        });
-        
-        const collectionsWithChanges = Array.from(collectionSet);
-        setSelectedSchemaCollections(collectionsWithChanges);
-        
-        // Create detailed message
-        const fieldCount = diffData.diff.fields?.length || 0;
-        const relationCount = diffData.diff.relations?.length || 0;
-        const collectionCount = collectionsWithChanges.length;
-        
-        onStatusUpdate({ 
-          type: 'info', 
-          message: `Schema differences found: ${collectionCount} collection(s), ${fieldCount} field(s), ${relationCount} relation(s). Review and select which to apply.` 
-        });
-        setSchemaMigrationStep('apply');
-      } else {
+      if (totalChanges === 0) {
         onStatusUpdate({ 
           type: 'success', 
-          message: 'No schema differences found. Schemas are already in sync!' 
+          message: '✅ No differences found. Schemas are in sync!' 
         });
         setSchemaMigrationStep('complete');
+        return;
       }
+      
+      // Auto-select all collections from diff
+      const allCollections = new Set<string>();
+      
+      diffResult.diff.collections?.forEach((col: any) => {
+        if (col.collection) allCollections.add(col.collection);
+      });
+      
+      diffResult.diff.fields?.forEach((field: any) => {
+        if (field.collection) allCollections.add(field.collection);
+      });
+      
+      diffResult.diff.relations?.forEach((rel: any) => {
+        if (rel.collection) allCollections.add(rel.collection);
+      });
+      
+      
+      setSelectedSchemaCollections(Array.from(allCollections));
+      
+      onStatusUpdate({ 
+        type: 'info', 
+        message: `✅ Found changes: ${collectionsCount} collections, ${fieldsCount} fields, ${relationsCount} relations` 
+      });
+      setSchemaMigrationStep('apply');
     } catch (error: any) {
       logError('Schema Diff', error);
       
@@ -858,13 +240,8 @@ export function CollectionList({
   };
 
   const handleSchemaApply = async () => {
-    if (!schemaDiff) return;
-    
-    if (selectedSchemaCollections.length === 0) {
-      onStatusUpdate({ 
-        type: 'error', 
-        message: 'Please select at least one collection to apply' 
-      });
+    if (!schemaDiff || !schemaDiff.hash) {
+      onStatusUpdate({ type: 'error', message: '❌ No diff data. Please run Compare Schemas first.' });
       return;
     }
     
@@ -872,143 +249,60 @@ export function CollectionList({
     setLoading('schema_apply', true);
     
     try {
-      const client = await import('../lib/DirectusClient').then(m => m.DirectusClient);
-      const targetClient = new client(targetUrl, targetToken);
+      const { DirectusClient } = await import('../lib/DirectusClient');
+      const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      // Log the original diff structure
-      console.log('\n📋 Original schemaDiff:', schemaDiff);
+      // Filter out system collections (directus_*) but keep all relations
+      // Relations to system collections are allowed and necessary
+      const filteredCollections = (schemaDiff.diff.collections || []).filter((col: any) => 
+        col.collection && !col.collection.startsWith('directus_')
+      );
       
-      // Ensure we have the correct structure
-      if (!schemaDiff.hash) {
-        throw new Error('Schema diff is missing hash. Please run "Compare Schemas" again.');
-      }
+      const filteredFields = (schemaDiff.diff.fields || []).filter((field: any) => 
+        field.collection && !field.collection.startsWith('directus_')
+      );
       
-      if (!schemaDiff.diff) {
-        throw new Error('Schema diff is missing diff data. Please run "Compare Schemas" again.');
-      }
+      // Keep ALL relations - even those pointing to system collections
+      const filteredRelations = schemaDiff.diff.relations || [];
       
-      // Filter to only selected collections and sanitize field items
       const filteredDiff = {
         hash: schemaDiff.hash,
         diff: {
-          collections: (schemaDiff.diff.collections || []).filter((col: any) => 
-            !col?.collection?.startsWith('directus_') &&
-            selectedSchemaCollections.includes(col?.collection)
-          ),
-          fields: (schemaDiff.diff.fields || [])
-            .filter((field: any) => 
-              !field?.collection?.startsWith('directus_') &&
-              selectedSchemaCollections.includes(field?.collection)
-            )
-            .map((field: any) => {
-              // Sanitize field items - only keep allowed properties
-              // Remove properties like 'type', 'schema', 'meta' that are not allowed in the payload
-              const { type, schema, meta, ...sanitizedField } = field;
-              
-              // Also sanitize the diff array - remove 'differences' property from each diff item
-              if (sanitizedField.diff && Array.isArray(sanitizedField.diff)) {
-                sanitizedField.diff = sanitizedField.diff.map((diffItem: any) => {
-                  const { differences, ...sanitizedDiffItem } = diffItem;
-                  return sanitizedDiffItem;
-                });
-              }
-              
-              return sanitizedField;
-            }),
-          relations: (schemaDiff.diff.relations || []).filter((rel: any) => {
-            // Allow relations where at least one side is a selected non-system collection
-            // This includes relations TO system collections (e.g., user_created -> directus_users)
-            const isCollectionSelected = selectedSchemaCollections.includes(rel?.collection);
-            const isRelatedCollectionSelected = selectedSchemaCollections.includes(rel?.related_collection);
-            const isCollectionSystem = rel?.collection?.startsWith('directus_');
-            const isRelatedCollectionSystem = rel?.related_collection?.startsWith('directus_');
-            
-            // Include if:
-            // 1. The main collection is selected and not a system collection
-            // 2. OR the related collection is selected and not a system collection
-            // This allows relations to system collections (like directus_users, directus_roles)
-            return (isCollectionSelected && !isCollectionSystem) || 
-                   (isRelatedCollectionSelected && !isRelatedCollectionSystem);
-          })
+          collections: filteredCollections,
+          fields: filteredFields,
+          relations: filteredRelations
         }
       };
       
-      // Log the filtered diff being sent
-      console.log('\n📤 Filtered diff to apply:', {
-        hash: filteredDiff.hash,
-        collectionsCount: filteredDiff.diff.collections?.length || 0,
-        fieldsCount: filteredDiff.diff.fields?.length || 0,
-        relationsCount: filteredDiff.diff.relations?.length || 0,
-        fullDiff: filteredDiff
-      });
-      
-      // Log relations in detail for debugging
-      if (filteredDiff.diff.relations?.length > 0) {
-        console.log('\n🔗 Relations to be applied:', filteredDiff.diff.relations.map((rel: any) => ({
-          collection: rel.collection,
-          field: rel.field,
-          related_collection: rel.related_collection,
-          meta: rel.meta
-        })));
-      } else {
-        console.log('\n⚠️ No relations in filtered diff');
-        console.log('  Original relations count:', schemaDiff.diff.relations?.length || 0);
-        if (schemaDiff.diff.relations?.length > 0) {
-          console.log('  Sample original relations:', schemaDiff.diff.relations.slice(0, 3).map((rel: any) => ({
-            collection: rel.collection,
-            field: rel.field,
-            related_collection: rel.related_collection
-          })));
-        }
-      }
-      
-      // Check if collections have the 'diff' property (SDK format)
-      if (filteredDiff.diff.collections?.length > 0) {
-        const firstCollection = filteredDiff.diff.collections[0];
-        console.log('\n🔍 First collection structure:', firstCollection);
-        console.log('  - Has "diff" property?', 'diff' in firstCollection);
-        console.log('  - Has "action" property?', 'action' in firstCollection);
-        console.log('  - All keys:', Object.keys(firstCollection));
-      }
-      
-      if (filteredDiff.diff.fields?.length > 0) {
-        const firstField = filteredDiff.diff.fields[0];
-        console.log('\n🔍 First field structure:', firstField);
-        console.log('  - Has "diff" property?', 'diff' in firstField);
-        console.log('  - Has "action" property?', 'action' in firstField);
-        console.log('  - All keys:', Object.keys(firstField));
-      }
-      
-      // Validate that we have something to apply
-      if (!filteredDiff.diff.collections?.length && 
-          !filteredDiff.diff.fields?.length && 
-          !filteredDiff.diff.relations?.length) {
+      // Check if there's anything to apply
+      if (filteredCollections.length === 0 && filteredFields.length === 0 && filteredRelations.length === 0) {
         onStatusUpdate({ 
           type: 'warning', 
-          message: 'No changes to apply for selected collections.' 
+          message: '⚠️ No custom collections to migrate. System collections cannot be migrated.' 
         });
         setSchemaMigrationStep('complete');
         return;
       }
       
-      console.log('\n⚡ Sending schema apply request...');
-      const applyResponse = await targetClient.post('/schema/apply?force=true', filteredDiff);
-      console.log('\n✅ Schema apply response:', applyResponse);
+      // POST the filtered diff to /schema/apply?force=true
+      await targetClient.post('/schema/apply?force=true', filteredDiff);
+      
+      const collectionsCount = filteredCollections.length;
+      const fieldsCount = filteredFields.length;
+      const relationsCount = filteredRelations.length;
       
       onStatusUpdate({ 
         type: 'success', 
-        message: `Schema migration completed! Applied changes to ${selectedSchemaCollections.length} collection(s).` 
+        message: `✅ Schema applied! ${collectionsCount} collections, ${fieldsCount} fields, ${relationsCount} relations` 
       });
       
       setSchemaMigrationStep('complete');
-      
-      // Refresh target collections after schema migration
       await loadTargetCollections();
     } catch (error: any) {
       logError('Schema Apply', error);
       onStatusUpdate({ 
         type: 'error', 
-        message: `Failed to apply schema changes: ${error.message}` 
+        message: `❌ Apply failed: ${error.message}` 
       });
       setSchemaMigrationStep('idle');
     } finally {
@@ -1020,6 +314,7 @@ export function CollectionList({
     setSchemaMigrationStep('idle');
     setSchemaSnapshot(null);
     setSchemaDiff(null);
+    setMigratedCollections([]);
   };
 
   // Helper function to categorize and analyze schema differences
@@ -1033,11 +328,7 @@ export function CollectionList({
     // Parse diff structure - each item has {collection, field, diff: [{kind, rhs/lhs}]}
     // kind: 'N' = New, 'D' = Delete, 'E' = Edit
     
-    // Group fields by collection with parsed diff info
     const fieldsByCollection: Record<string, any[]> = {};
-    
-    console.log('\n🔍 ANALYZING SCHEMA DIFFERENCES - Field Level Analysis:');
-    console.log('═══════════════════════════════════════════════════════');
     
     (diffData.diff.fields || []).forEach((fieldItem: any) => {
       const collectionName = fieldItem.collection;
@@ -1080,23 +371,6 @@ export function CollectionList({
         }
       });
       
-      // Log this field's analysis
-      if (fieldAction === 'update' && diffDetails.length > 0) {
-        console.log(`\n📌 ${collectionName}.${fieldItem.field} - MODIFIED`);
-        console.log(`   Reason: Field has different configuration`);
-        console.log(`   Changes detected (${diffDetails.length}):`);
-        diffDetails.forEach((detail, idx) => {
-          console.log(`     ${idx + 1}. ${detail}`);
-        });
-        console.log(`   Full diff structure:`, diffArray);
-      } else if (fieldAction === 'create') {
-        console.log(`\n✨ ${collectionName}.${fieldItem.field} - NEW`);
-        console.log(`   Reason: Field exists in source but not in target`);
-      } else if (fieldAction === 'delete') {
-        console.log(`\n🗑️ ${collectionName}.${fieldItem.field} - DELETED`);
-        console.log(`   Reason: Field exists in target but not in source`);
-      }
-      
       fieldsByCollection[collectionName].push({
         ...fieldItem,
         fieldName: fieldItem.field,
@@ -1105,10 +379,8 @@ export function CollectionList({
         diffDetails: diffDetails
       });
     });
-    
-    console.log('\n═══════════════════════════════════════════════════════');
 
-    // Group relations by collection with parsed diff info
+    // Group relations by collection
     const relationsByCollection: Record<string, any[]> = {};
     (diffData.diff.relations || []).forEach((relationItem: any) => {
       const collectionName = relationItem.collection;
@@ -1142,9 +414,9 @@ export function CollectionList({
     
     // Analyze each collection in the diff
     (diffData.diff.collections || []).forEach((colItem: any) => {
-      if (colItem.collection?.startsWith('directus_')) return;
-
       const collectionName = colItem.collection;
+      if (!collectionName) return; // Skip if no collection name
+      
       processedCollections.add(collectionName);
       
       // Parse collection diff array to determine action
@@ -1245,7 +517,7 @@ export function CollectionList({
     // These are existing collections with only field or relation modifications
     allCollectionsInDiff.forEach((collectionName: string) => {
       if (processedCollections.has(collectionName)) return; // Already processed
-      if (collectionName.startsWith('directus_')) return; // Skip system collections
+      // Note: No longer skipping system collections here - will be filtered in UI based on toggle
       
       const collectionFields = fieldsByCollection[collectionName] || [];
       const collectionRelations = relationsByCollection[collectionName] || [];
@@ -1632,20 +904,50 @@ export function CollectionList({
         {schemaDiff && schemaMigrationStep === 'apply' && !loading.schema_apply && (() => {
           const { newCollections, modifiedCollections, deletedCollections } = analyzeSchemaChanges(schemaDiff, schemaSnapshot);
           
-          // Apply search filter
+          // Apply search filter and system collections filter
           const filterTerm = schemaCollectionFilter.toLowerCase().trim();
-          const filteredNewCollections = newCollections.filter((col: any) => 
-            col.collection.toLowerCase().includes(filterTerm)
-          );
+          
+          const filteredNewCollections = newCollections.filter((col: any) => {
+            const matchesSearch = col.collection.toLowerCase().includes(filterTerm);
+            const isSystemCollection = col.collection.startsWith('directus_');
+            const shouldShow = showSystemCollections || !isSystemCollection;
+            return matchesSearch && shouldShow;
+          });
+          
           const filteredModifiedCollections = modifiedCollections.filter((col: any) => 
-            col.collection.toLowerCase().includes(filterTerm)
+            col.collection.toLowerCase().includes(filterTerm) &&
+            (showSystemCollections || !col.collection.startsWith('directus_'))
           );
           const filteredDeletedCollections = deletedCollections.filter((col: any) => 
-            col.collection.toLowerCase().includes(filterTerm)
+            col.collection.toLowerCase().includes(filterTerm) &&
+            (showSystemCollections || !col.collection.startsWith('directus_'))
           );
           
           const totalCollections = newCollections.length + modifiedCollections.length + deletedCollections.length;
           const filteredTotal = filteredNewCollections.length + filteredModifiedCollections.length + filteredDeletedCollections.length;
+          
+          // Count system collections in diff
+          const systemCollectionsCount = [
+            ...newCollections.filter((c: any) => c.collection.startsWith('directus_')),
+            ...modifiedCollections.filter((c: any) => c.collection.startsWith('directus_')),
+            ...deletedCollections.filter((c: any) => c.collection.startsWith('directus_'))
+          ].length;
+          
+          // Calculate how many collections will actually be applied (have real changes)
+          const selectedSet = new Set(selectedSchemaCollections);
+          const collectionsToApply = [
+            ...newCollections,
+            ...modifiedCollections,
+            ...deletedCollections
+          ].filter((col: any) => {
+            // Must be selected
+            if (!selectedSet.has(col.collection)) return false;
+            // Must have valid diff with changes
+            if (!col.diff || !Array.isArray(col.diff) || col.diff.length === 0) return false;
+            // Check if has actual change kinds (N/E/D)
+            const hasRealChange = col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+            return hasRealChange;
+          }).length;
           
           return (
             <div style={{
@@ -1655,9 +957,26 @@ export function CollectionList({
               border: '2px solid #fb923c',
               borderRadius: '8px'
             }}>
+              {/* System Collections Warning */}
+              {showSystemCollections && systemCollectionsCount > 0 && (
+                <div style={{
+                  padding: '0.75rem',
+                  backgroundColor: '#fee2e2',
+                  borderRadius: '6px',
+                  border: '1px solid #fecaca',
+                  marginBottom: '1rem'
+                }}>
+                  <div style={{ fontSize: '0.875rem', fontWeight: '600', color: '#dc2626', marginBottom: '0.5rem' }}>
+                    ⚠️ System Collections Warning:
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#dc2626', lineHeight: '1.4' }}>
+                    {systemCollectionsCount} system collection(s) detected in schema diff. Migrating these can affect core Directus functionality. Proceed with caution.
+                  </div>
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <h4 style={{ margin: 0, color: '#9a3412', fontSize: '1rem' }}>
-                  📊 Schema Differences: {totalCollections} collection(s) ({selectedSchemaCollections.length} selected)
+                  📊 Schema Differences: {totalCollections} collection(s) ({selectedSchemaCollections.length} checked, {collectionsToApply} with changes)
                   {filterTerm && ` - Showing ${filteredTotal} matching`}
                 </h4>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -1676,12 +995,43 @@ export function CollectionList({
                       outline: 'none'
                     }}
                   />
+                  {/* Toggle System Collections */}
+                  <button
+                    onClick={() => {
+                      console.log('🔘 Toggle clicked! Current state:', showSystemCollections);
+                      console.log('📊 Total collections before filter:', {
+                        new: newCollections.length,
+                        modified: modifiedCollections.length,
+                        deleted: deletedCollections.length
+                      });
+                      console.log('🎯 System collections count:', systemCollectionsCount);
+                      const newState = !showSystemCollections;
+                      setShowSystemCollections(newState);
+                      console.log('✅ New state:', newState);
+                    }}
+                    style={{
+                      padding: '0.25rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: showSystemCollections ? '#dc2626' : '#f3f4f6',
+                      color: showSystemCollections ? 'white' : '#6b7280',
+                      border: `1px solid ${showSystemCollections ? '#dc2626' : '#d1d5db'}`,
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem'
+                    }}
+                    title={showSystemCollections ? 'Hide directus_* collections' : 'Show directus_* collections'}
+                  >
+                    {showSystemCollections ? '🔒 Hide System' : '🔓 Show System'}
+                  </button>
                   <button
                     onClick={() => {
                       const allCollections = [
-                        ...newCollections.map((c: any) => c.collection),
-                        ...modifiedCollections.map((c: any) => c.collection),
-                        ...deletedCollections.map((c: any) => c.collection)
+                        ...newCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection),
+                        ...modifiedCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection),
+                        ...deletedCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection)
                       ];
                       setSelectedSchemaCollections(allCollections);
                     }}
@@ -2095,6 +1445,74 @@ export function CollectionList({
             }
           </div>
         )}
+
+        {/* Migrated Collections List */}
+        {migratedCollections.length > 0 && (
+          <div style={{
+            marginTop: '1rem',
+            padding: '1rem',
+            backgroundColor: '#d1fae5',
+            border: '2px solid #10b981',
+            borderRadius: '8px'
+          }}>
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              marginBottom: '0.75rem'
+            }}>
+              <h4 style={{ 
+                margin: 0, 
+                color: '#065f46', 
+                fontSize: '0.95rem',
+                fontWeight: '600'
+              }}>
+                ✅ Successfully Migrated Collections ({migratedCollections.length})
+              </h4>
+              <button
+                onClick={() => setMigratedCollections([])}
+                style={{
+                  padding: '0.35rem 0.75rem',
+                  fontSize: '0.75rem',
+                  backgroundColor: '#ef4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: '500'
+                }}
+                title="Clear list"
+              >
+                🗑️ Clear
+              </button>
+            </div>
+            <div style={{
+              maxHeight: '200px',
+              overflowY: 'auto',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+              gap: '0.5rem'
+            }}>
+              {migratedCollections.map((collection, index) => (
+                <div
+                  key={`${collection}-${index}`}
+                  style={{
+                    padding: '0.5rem 0.75rem',
+                    backgroundColor: 'white',
+                    border: '1px solid #10b981',
+                    borderRadius: '4px',
+                    fontSize: '0.8rem',
+                    color: '#065f46',
+                    fontFamily: 'monospace',
+                    wordBreak: 'break-word'
+                  }}
+                >
+                  {collection}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Advanced Migration Options */}
@@ -2155,7 +1573,7 @@ export function CollectionList({
             onClick={() => setShowAccessControlManager(true)}
             style={{
               flex: 1,
-              backgroundColor: '#7c3aed',
+              backgroundColor: '#f59e0b',
               color: 'white',
               padding: '0.75rem 1.5rem',
               border: 'none',
@@ -2284,6 +1702,32 @@ export function CollectionList({
         )}
         */}
       </div>
+
+      {/* File Migration Warning */}
+      {selectedCollections.some(col => col === 'directus_files' || col === 'directus_folders') || 
+       collections.some(c => selectedCollections.includes(c.collection) && 
+         (c.meta?.note?.includes('file') || JSON.stringify(c.schema).includes('directus_files'))) ? (
+        <div style={{
+          padding: '1rem',
+          backgroundColor: '#dbeafe',
+          borderRadius: '6px',
+          border: '1px solid #3b82f6',
+          marginBottom: '1rem'
+        }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: '600', color: '#1e40af', marginBottom: '0.5rem' }}>
+            📎 Files & Foreign Keys Notice:
+          </div>
+          <div style={{ fontSize: '0.8rem', color: '#1e40af', lineHeight: '1.4' }}>
+            <strong>Important:</strong> If your collections contain file fields, follow this order:
+            <ol style={{ marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+              <li><strong>First:</strong> Migrate <code>directus_folders</code> (if using folder structure)</li>
+              <li><strong>Second:</strong> Use "Files Manager" tab to migrate files → this creates records in <code>directus_files</code></li>
+              <li><strong>Then:</strong> Migrate your collections with file references</li>
+            </ol>
+            This prevents foreign key errors when migrating data with file references.
+          </div>
+        </div>
+      ) : null}
 
       {/* Main Action Buttons */}
       <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginBottom: '1.5rem' }}>
@@ -2426,19 +1870,18 @@ export function CollectionList({
               onClick={() => {
                 setStatusFilter('existing');
                 setCurrentPage(1);
-                const customCollections = collections.filter(c => !c.collection.startsWith('directus_'));
+                const customCollections = collections.filter(c => showSystemCollections || !c.collection.startsWith('directus_'));
                 const existingCollections = customCollections.filter(c => getCollectionStatus(c) === 'existing');
-                setSelectedCollections(prev => [...prev.filter(id => id.startsWith('directus_')), ...existingCollections.map(c => c.collection)]);
+                setSelectedCollections(prev => [...prev.filter(id => !showSystemCollections && id.startsWith('directus_')), ...existingCollections.map(c => c.collection)]);
               }}
               style={{
-                padding: '0.25rem 0.5rem',
+                padding: '0.5rem 0.75rem',
                 fontSize: '0.75rem',
-                border: `1px solid ${statusFilter === 'existing' ? '#dc2626' : '#fecaca'}`,
+                border: 'none',
                 borderRadius: '4px',
                 cursor: 'pointer',
-                fontWeight: '500',
-                backgroundColor: statusFilter === 'existing' ? '#dc2626' : '#fee2e2',
-                color: statusFilter === 'existing' ? 'white' : '#dc2626'
+                backgroundColor: statusFilter === 'existing' ? '#f97316' : '#e5e7eb',
+                color: statusFilter === 'existing' ? 'white' : '#374151'
               }}
             >
               Existing ({collections.filter(c => !c.collection.startsWith('directus_') && getCollectionStatus(c) === 'existing').length})
@@ -2448,19 +1891,18 @@ export function CollectionList({
                 setStatusFilter('new');
                 setCurrentPage(1);
                 setShowNewCollectionWarning(true);
-                const customCollections = collections.filter(c => !c.collection.startsWith('directus_'));
+                const customCollections = collections.filter(c => showSystemCollections || !c.collection.startsWith('directus_'));
                 const newCollections = customCollections.filter(c => getCollectionStatus(c) === 'new');
-                setSelectedCollections(prev => [...prev.filter(id => id.startsWith('directus_')), ...newCollections.map(c => c.collection)]);
+                setSelectedCollections(prev => [...prev.filter(id => !showSystemCollections && id.startsWith('directus_')), ...newCollections.map(c => c.collection)]);
               }}
               style={{
-                padding: '0.25rem 0.5rem',
+                padding: '0.5rem 0.75rem',
                 fontSize: '0.75rem',
-                border: `1px solid ${statusFilter === 'new' ? '#16a34a' : '#bbf7d0'}`,
+                border: 'none',
                 borderRadius: '4px',
                 cursor: 'pointer',
-                fontWeight: '500',
-                backgroundColor: statusFilter === 'new' ? '#16a34a' : '#dcfce7',
-                color: statusFilter === 'new' ? 'white' : '#16a34a'
+                backgroundColor: statusFilter === 'new' ? '#3B82F6' : '#e5e7eb',
+                color: statusFilter === 'new' ? 'white' : '#374151'
               }}
             >
               New ({collections.filter(c => !c.collection.startsWith('directus_') && getCollectionStatus(c) === 'new').length})
@@ -2468,14 +1910,13 @@ export function CollectionList({
             <button
               onClick={() => setSelectedCollections(prev => prev.filter(id => id.startsWith('directus_')))}
               style={{
-                padding: '0.25rem 0.5rem',
+                padding: '0.5rem 0.75rem',
                 fontSize: '0.75rem',
-                border: '1px solid #d1d5db',
+                border: 'none',
                 borderRadius: '4px',
                 cursor: 'pointer',
-                fontWeight: '500',
-                backgroundColor: '#f3f4f6',
-                color: '#6b7280'
+                backgroundColor: '#6b7280',
+                color: 'white'
               }}
             >
               Clear
@@ -2486,7 +1927,8 @@ export function CollectionList({
         <div style={{ display: 'grid', gap: '1rem' }}>
           {(() => {
             const filteredCollections = collections.filter(c => {
-              if (c.collection.startsWith('directus_')) return false;
+              // Filter system collections based on toggle
+              if (!showSystemCollections && c.collection.startsWith('directus_')) return false;
               if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
               if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
               return false;
@@ -2553,12 +1995,11 @@ export function CollectionList({
                         {/* Target Status Badge */}
                         <span style={{
                           padding: '0.25rem 0.5rem',
-                          borderRadius: '4px',
+                          borderRadius: '9999px',
                           fontSize: '0.75rem',
                           fontWeight: '500',
-                          backgroundColor: collectionStatus === 'existing' ? '#fee2e2' : collectionStatus === 'new' ? '#dcfce7' : '#f3f4f6',
-                          color: collectionStatus === 'existing' ? '#dc2626' : collectionStatus === 'new' ? '#16a34a' : '#6b7280',
-                          border: `1px solid ${collectionStatus === 'existing' ? '#fecaca' : collectionStatus === 'new' ? '#bbf7d0' : '#d1d5db'}`,
+                          backgroundColor: collectionStatus === 'existing' ? '#fef3c7' : collectionStatus === 'new' ? '#dbeafe' : '#f3f4f6',
+                          color: collectionStatus === 'existing' ? '#92400e' : collectionStatus === 'new' ? '#1e40af' : '#6b7280',
                           lineHeight: '1'
                         }}>
                           {collectionStatus === 'existing' ? 'Existing' : collectionStatus === 'new' ? 'New' : 'Unknown'}
@@ -2581,14 +2022,12 @@ export function CollectionList({
                         
                         {collection.meta?.singleton && (
                           <span style={{
-                            padding: '0.25rem 0.5rem',
-                            borderRadius: '4px',
+                            padding: '4px 10px',
+                            borderRadius: '9999px',
                             fontSize: '0.75rem',
                             fontWeight: '500',
-                            backgroundColor: '#fef3c7',
-                            color: '#d97706',
-                            border: '1px solid #fde68a',
-                            lineHeight: '1'
+                            backgroundColor: '#dc2626',
+                            color: 'white'
                           }}>
                             Singleton
                           </span>
@@ -2710,23 +2149,6 @@ export function CollectionList({
                         >
                           📋 Select Items
                         </button>
-                        <button
-                          onClick={() => handleImport(collection.collection)}
-                          disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
-                          style={{
-                            backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#f97316',
-                            color: 'white',
-                            padding: '0.5rem 1rem',
-                            borderRadius: '6px',
-                            border: 'none',
-                            cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
-                            fontWeight: '500',
-                            opacity: loading[`import_${collection.collection}`] ? 0.7 : 1
-                          }}
-                          title={collectionStatus === 'new' ? 'Cannot import to new collections. Please sync schema first.' : 'Import all items from source'}
-                        >
-                          {collectionStatus === 'new' ? 'Schema Required' : 'Import All'}
-                        </button>
                       </div>
                     )}
                   </div>
@@ -2740,7 +2162,8 @@ export function CollectionList({
         {/* Pagination Navigation */}
         {(() => {
           const filteredCollections = collections.filter(c => {
-            if (c.collection.startsWith('directus_')) return false;
+            // Filter system collections based on toggle
+            if (!showSystemCollections && c.collection.startsWith('directus_')) return false;
             if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
             if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
             return false;
@@ -3061,12 +2484,11 @@ export function CollectionList({
                               {/* Target Status Badge */}
                               <span style={{
                                 padding: '2px 6px',
-                                borderRadius: '3px',
+                                borderRadius: '9999px',
                                 fontSize: '0.7rem',
                                 fontWeight: '500',
-                                backgroundColor: collectionStatus === 'existing' ? '#fee2e2' : collectionStatus === 'new' ? '#dcfce7' : '#f3f4f6',
-                                color: collectionStatus === 'existing' ? '#dc2626' : collectionStatus === 'new' ? '#16a34a' : '#6b7280',
-                                border: `1px solid ${collectionStatus === 'existing' ? '#fecaca' : collectionStatus === 'new' ? '#bbf7d0' : '#d1d5db'}`
+                                backgroundColor: collectionStatus === 'existing' ? '#fef3c7' : collectionStatus === 'new' ? '#dbeafe' : '#f3f4f6',
+                                color: collectionStatus === 'existing' ? '#92400e' : collectionStatus === 'new' ? '#1e40af' : '#6b7280'
                               }}>
                                 {collectionStatus === 'existing' ? 'Existing' : collectionStatus === 'new' ? 'New' : 'Unknown'}
                               </span>
@@ -3331,6 +2753,7 @@ export function CollectionList({
           onLoadMore={() => {}}
           hasMore={false}
           loading={loadingPreview}
+          relations={sourceRelations}
         />
       )}
 

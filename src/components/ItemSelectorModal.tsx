@@ -44,14 +44,53 @@ export function ItemSelectorModal({
         if (systemFields.includes(key)) return
         
         const value = firstItem[key]
-        const isM2M = Array.isArray(value) && value.length > 0
+        let isRelationField = false
         
-        fields.push({ field: key, isM2M })
+        // Check if this field has a relation definition in schema
+        if (relations && relations.length > 0) {
+          // M2O: This collection has a foreign key field pointing to another collection
+          const hasM2O = relations.some((rel: any) => 
+            rel.collection === collectionName && rel.field === key
+          )
+          
+          // O2M: Another collection points to this one, and we have the reverse field
+          const hasO2M = relations.some((rel: any) => 
+            rel.related_collection === collectionName && 
+            rel.meta?.one_field === key
+          )
+          
+          // M2M: This is part of a many-to-many via junction table
+          const hasM2M = relations.some((rel: any) => 
+            (rel.collection === collectionName && rel.meta?.junction_field) ||
+            (rel.related_collection === collectionName && rel.meta?.junction_field)
+          )
+          
+          if (hasM2O || hasO2M || hasM2M) {
+            isRelationField = true
+          }
+        }
+        
+        // Fallback: Detect by value structure when no relations metadata
+        if (!isRelationField) {
+          // Arrays often indicate O2M or M2M relationships
+          if (Array.isArray(value) && value.length > 0) {
+            // M2A has structure: [{collection: 'xxx', item: 'yyy'}, ...]
+            if (value[0]?.collection && (value[0]?.item !== undefined)) {
+              isRelationField = true // M2A
+            } 
+            // Regular array of IDs or objects indicates O2M/M2M
+            else if (typeof value[0] === 'string' || typeof value[0] === 'number' || typeof value[0] === 'object') {
+              isRelationField = true
+            }
+          }
+        }
+        
+        fields.push({ field: key, isM2M: isRelationField })
       })
       
       setAvailableFields(fields)
     }
-  }, [items])
+  }, [items, relations, collectionName])
 
   // Filter items based on search
   const filteredItems = items.filter(item => {
@@ -123,17 +162,67 @@ export function ItemSelectorModal({
     const missingDeps: Array<{ field: string; collection: string; value: any }> = []
     
     relations.forEach((relation: any) => {
-      // Check if this relation applies to current collection
+      // M2O: Many-to-One (current collection → related collection)
       if (relation.collection === collectionName && relation.related_collection) {
         const fieldName = relation.field
         const relatedCollection = relation.related_collection
         
         // Check if item has a value for this FK field
-        if (item[fieldName] !== null && item[fieldName] !== undefined) {
+        const value = item[fieldName]
+        if (value !== null && value !== undefined) {
           missingDeps.push({
             field: fieldName,
             collection: relatedCollection,
-            value: item[fieldName]
+            value: value
+          })
+        }
+      }
+      
+      // O2M: One-to-Many (check reverse relation)
+      if (relation.related_collection === collectionName && relation.meta?.one_field) {
+        const fieldName = relation.meta.one_field
+        const relatedCollection = relation.collection
+        
+        const value = item[fieldName]
+        if (Array.isArray(value) && value.length > 0) {
+          missingDeps.push({
+            field: fieldName,
+            collection: relatedCollection,
+            value: value
+          })
+        }
+      }
+      
+      // M2M: Many-to-Many (through junction table)
+      if (relation.meta?.junction_field === collectionName) {
+        const fieldName = relation.field
+        const junctionCollection = relation.collection
+        
+        const value = item[fieldName]
+        if (Array.isArray(value) && value.length > 0) {
+          missingDeps.push({
+            field: fieldName,
+            collection: junctionCollection,
+            value: value
+          })
+        }
+      }
+    })
+    
+    // M2A: Many-to-Any (special case - array of {collection, item})
+    Object.keys(item).forEach(key => {
+      const value = item[key]
+      if (Array.isArray(value) && value.length > 0) {
+        // Check if it's M2A structure
+        if (value[0]?.collection && value[0]?.item) {
+          // Each item in M2A can reference different collections
+          const collections = [...new Set(value.map((v: any) => v.collection))]
+          collections.forEach(col => {
+            missingDeps.push({
+              field: key,
+              collection: col,
+              value: value.filter((v: any) => v.collection === col).map((v: any) => v.item)
+            })
           })
         }
       }
@@ -307,7 +396,7 @@ export function ItemSelectorModal({
                     />
                     <span style={{ fontSize: '0.875rem', fontWeight: '500' }}>
                       {field}
-                      {isM2M && <span style={{ marginLeft: '0.5rem', color: '#f59e0b', fontSize: '0.75rem' }}>🔗 M2M</span>}
+                      {isM2M && <span style={{ marginLeft: '0.5rem', color: '#f59e0b', fontSize: '0.75rem' }}>🔗 Relation</span>}
                     </span>
                   </label>
                 ))}

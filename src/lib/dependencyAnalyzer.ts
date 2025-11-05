@@ -27,7 +27,7 @@ export interface MigrationOrder {
 /**
  * Analyzes schema relations to build a dependency graph
  */
-export function analyzeDependencies(relations: any[]): DependencyGraph {
+export function analyzeDependencies(relations: any[], fields?: any[]): DependencyGraph {
   const graph: DependencyGraph = {};
 
   // Initialize graph for all collections
@@ -38,6 +38,33 @@ export function analyzeDependencies(relations: any[]): DependencyGraph {
     }
     if (rel.related_collection && !rel.related_collection.startsWith('directus_')) {
       allCollections.add(rel.related_collection);
+    }
+  });
+
+  // Check for file/folder dependencies in fields
+  const collectionsWithFiles = new Set<string>();
+  const collectionsWithFolders = new Set<string>();
+  
+  if (fields) {
+    fields.forEach((field: any) => {
+      // Check if field is a file type or has relation to directus_files
+      if (field.type === 'file' || field.type === 'uuid' && field.meta?.interface === 'file') {
+        collectionsWithFiles.add(field.collection);
+      }
+      // Check for many-to-many or many-to-one relations to directus_files
+      if (field.schema?.foreign_key_table === 'directus_files') {
+        collectionsWithFiles.add(field.collection);
+      }
+    });
+  }
+
+  // Also check relations for file/folder dependencies
+  relations.forEach((rel: any) => {
+    if (rel.related_collection === 'directus_files' && rel.collection && !rel.collection.startsWith('directus_')) {
+      collectionsWithFiles.add(rel.collection);
+    }
+    if (rel.related_collection === 'directus_folders' && rel.collection && !rel.collection.startsWith('directus_')) {
+      collectionsWithFolders.add(rel.collection);
     }
   });
 
@@ -56,12 +83,20 @@ export function analyzeDependencies(relations: any[]): DependencyGraph {
     const sourceCollection = rel.collection;
     const targetCollection = rel.related_collection;
 
-    // Skip system collections
-    if (sourceCollection?.startsWith('directus_') || targetCollection?.startsWith('directus_')) {
-      return;
+    // Skip system collections (except for file/folder dependencies)
+    const isSourceSystem = sourceCollection?.startsWith('directus_');
+    const isTargetSystem = targetCollection?.startsWith('directus_');
+    
+    if (isSourceSystem && isTargetSystem) {
+      return; // Skip if both are system collections
     }
 
     if (!sourceCollection || !targetCollection) {
+      return;
+    }
+
+    // Skip if source is system but not files/folders
+    if (isSourceSystem && targetCollection !== 'directus_files' && targetCollection !== 'directus_folders') {
       return;
     }
 
@@ -71,18 +106,33 @@ export function analyzeDependencies(relations: any[]): DependencyGraph {
     const relationType = rel.meta?.one_collection_field || rel.meta?.one_field;
     const isManyToOne = relationType !== null;
 
-    if (isManyToOne) {
+    if (isManyToOne && graph[sourceCollection]) {
       // Source collection depends on target collection
       if (!graph[sourceCollection].dependsOn.includes(targetCollection)) {
         graph[sourceCollection].dependsOn.push(targetCollection);
       }
-      if (!graph[targetCollection].requiredBy.includes(sourceCollection)) {
+      if (graph[targetCollection] && !graph[targetCollection].requiredBy.includes(sourceCollection)) {
         graph[targetCollection].requiredBy.push(sourceCollection);
       }
       // Also populate dependedBy (alias for requiredBy)
-      if (!graph[targetCollection].dependedBy.includes(sourceCollection)) {
+      if (graph[targetCollection] && !graph[targetCollection].dependedBy.includes(sourceCollection)) {
         graph[targetCollection].dependedBy.push(sourceCollection);
       }
+    }
+  });
+
+  // Add file/folder dependencies
+  collectionsWithFolders.forEach(collection => {
+    if (graph[collection] && !graph[collection].dependsOn.includes('directus_folders')) {
+      graph[collection].dependsOn.push('directus_folders');
+      console.log(`📁 ${collection} depends on directus_folders`);
+    }
+  });
+
+  collectionsWithFiles.forEach(collection => {
+    if (graph[collection] && !graph[collection].dependsOn.includes('directus_files')) {
+      graph[collection].dependsOn.push('directus_files');
+      console.log(`📎 ${collection} depends on directus_files`);
     }
   });
 
@@ -180,9 +230,29 @@ export function calculateMigrationOrder(graph: DependencyGraph, selectedCollecti
     result.push(node);
   }
 
+  // Add directus_folders and directus_files to the beginning if any collection depends on them
+  const hasFolderDeps = selectedCollections.some(col => 
+    filteredGraph[col]?.dependsOn.includes('directus_folders')
+  );
+  const hasFileDeps = selectedCollections.some(col => 
+    filteredGraph[col]?.dependsOn.includes('directus_files')
+  );
+
+  // Process system dependencies first
+  if (hasFolderDeps && selectedCollections.includes('directus_folders')) {
+    result.push('directus_folders');
+    visited.add('directus_folders');
+  }
+  if (hasFileDeps && selectedCollections.includes('directus_files')) {
+    result.push('directus_files');
+    visited.add('directus_files');
+  }
+
   // Process all selected collections
   for (const collection of selectedCollections) {
-    visit(collection);
+    if (!visited.has(collection)) {
+      visit(collection);
+    }
   }
 
   // Add warnings for dependencies on system collections
@@ -543,4 +613,54 @@ export function formatDependencyInfo(dep: CollectionDependency): string {
   parts.push(`Level: ${dep.level}`);
   
   return parts.join(' | ');
+}
+
+/**
+ * Auto-add required system collections (files/folders) to selection
+ * Returns the updated collection list with system dependencies added
+ */
+export function addSystemDependencies(
+  selectedCollections: string[],
+  graph: DependencyGraph,
+  availableCollections: string[]
+): { 
+  collections: string[], 
+  added: string[],
+  warnings: string[]
+} {
+  const result = new Set(selectedCollections);
+  const added: string[] = [];
+  const warnings: string[] = [];
+
+  // Check each selected collection for system dependencies
+  selectedCollections.forEach(collection => {
+    const deps = graph[collection]?.dependsOn || [];
+    
+    deps.forEach(dep => {
+      // If depends on directus_files or directus_folders
+      if ((dep === 'directus_files' || dep === 'directus_folders') && 
+          !result.has(dep) &&
+          availableCollections.includes(dep)) {
+        result.add(dep);
+        added.push(dep);
+        warnings.push(`Auto-added ${dep} (required by ${collection})`);
+      }
+    });
+  });
+
+  // Ensure folders come before files
+  const finalCollections = Array.from(result);
+  finalCollections.sort((a, b) => {
+    if (a === 'directus_folders') return -1;
+    if (b === 'directus_folders') return 1;
+    if (a === 'directus_files') return -1;
+    if (b === 'directus_files') return 1;
+    return 0;
+  });
+
+  return {
+    collections: finalCollections,
+    added,
+    warnings
+  };
 }

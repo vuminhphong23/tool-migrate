@@ -460,11 +460,20 @@ export async function importFlowsToDirectus(
           operations: operations
         };
         
-        // Try to import the complete flow
-        let importResponse;
+        // DELETE existing flow first (if exists), then create new one
+        // This approach is safer than PATCH as it avoids reference/dependency issues
         try {
-          // Try POST first (create new flow with operations)
-          importResponse = await client.post('/flows', flowWithOperations);
+          // Try to delete existing flow first (will cascade delete operations)
+          await client.delete(`/flows/${flowId}`);
+          logStep('flow_deleted', { flowId, name: sourceFlow.name });
+        } catch (deleteError: any) {
+          // Flow doesn't exist, which is fine - we'll create it
+          logStep('flow_not_found', { flowId, name: sourceFlow.name });
+        }
+        
+        // Now create the flow fresh
+        try {
+          const importResponse = await client.post('/flows', flowWithOperations);
           logStep('flow_created', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
           
           importedFlows?.push({
@@ -499,54 +508,29 @@ export async function importFlowsToDirectus(
                 });
                 
               } catch (refError: any) {
+                // Ignore reference update errors
               }
             }
           }
           
         } catch (createError: any) {
+          // If creation still fails, log and continue
+          logStep('flow_create_failed', { 
+            originalId: sourceFlow.id, 
+            flowId, 
+            name: sourceFlow.name,
+            error: createError.message 
+          });
           
-          // If POST fails, try PATCH (update existing)
-          const { id, operations: ops, ...flowUpdateData } = flowWithOperations;
+          importedFlows?.push({
+            originalId: sourceFlow.id,
+            newId: flowId,
+            name: sourceFlow.name,
+            status: 'error',
+            error: createError.message
+          });
           
-          try {
-            await client.patch(`/flows/${flowId}`, flowUpdateData);
-            logStep('flow_updated', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
-            
-            importedFlows?.push({
-              originalId: sourceFlow.id,
-              newId: flowId,
-              name: sourceFlow.name,
-              status: 'success'
-            });
-            
-            // Update operations individually
-            for (const operation of operations) {
-              try {
-                const opId = operation.id || idMapping[sourceOperations.find(o => o.flow === sourceFlow.id && o.key === operation.key)?.id || ''];
-                const { id: _, ...opData } = operation;
-                
-                await client.patch(`/operations/${opId}`, opData);
-                
-                importedOperations?.push({
-                  originalId: sourceOperations.find(o => o.id === opId)?.id || opId,
-                  newId: opId,
-                  flowId: flowId,
-                  status: 'success'
-                });
-              } catch (opError: any) {
-                importedOperations?.push({
-                  originalId: operation.id || '',
-                  newId: '',
-                  flowId: flowId,
-                  status: 'error',
-                  error: opError.message
-                });
-              }
-            }
-            
-          } catch (updateError: any) {
-            throw updateError;
-          }
+          throw createError;
         }
 
       } catch (error: any) {
