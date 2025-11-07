@@ -33,6 +33,7 @@ export function CollectionList({
   const onStatusUpdate = (_status: any) => {};
   const [importLimit, setImportLimit] = useState<number | null>(null)
   const [titleFilter, setTitleFilter] = useState<string>('')
+  const [collectionSearchTerm, setCollectionSearchTerm] = useState<string>('')
   const [showFlowsManager, setShowFlowsManager] = useState(false)
   const [showAccessControlManager, setShowAccessControlManager] = useState(false)
   const [showFilesManager, setShowFilesManager] = useState(false)
@@ -2373,6 +2374,54 @@ export function CollectionList({
             📦 Custom Collections ({collections.filter(c => !c.collection.startsWith('directus_')).length})
           </h3>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Search Collection */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <input
+                type="text"
+                placeholder="🔍 Search collections..."
+                value={collectionSearchTerm}
+                onChange={(e) => {
+                  setCollectionSearchTerm(e.target.value);
+                  setCurrentPage(1);
+                }}
+                style={{
+                  padding: '0.5rem 0.75rem',
+                  paddingRight: collectionSearchTerm ? '2rem' : '0.75rem',
+                  fontSize: '0.75rem',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '4px',
+                  backgroundColor: 'white',
+                  minWidth: '200px',
+                  outline: 'none',
+                  transition: 'border-color 0.2s'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                onBlur={(e) => e.target.style.borderColor = '#d1d5db'}
+              />
+              {collectionSearchTerm && (
+                <button
+                  onClick={() => {
+                    setCollectionSearchTerm('');
+                    setCurrentPage(1);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    right: '0.5rem',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '0.25rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    color: '#6b7280',
+                    fontSize: '0.875rem'
+                  }}
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
             {/* Pagination Controls */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>Show:</span>
@@ -2465,9 +2514,30 @@ export function CollectionList({
             const filteredCollections = collections.filter(c => {
               // Filter system collections based on toggle
               if (!showSystemCollections && c.collection.startsWith('directus_')) return false;
-              if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
-              if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
-              return false;
+              
+              // Filter by status
+              if (statusFilter === 'existing' && getCollectionStatus(c) !== 'existing') return false;
+              if (statusFilter === 'new' && getCollectionStatus(c) !== 'new') return false;
+              
+              // Filter by search term
+              if (collectionSearchTerm.trim()) {
+                const searchLower = collectionSearchTerm.toLowerCase().trim();
+                const collectionName = c.collection?.toLowerCase() || '';
+                const metaNote = c.meta?.note?.toLowerCase() || '';
+                const metaDisplay = c.meta?.display_template?.toLowerCase() || '';
+                const metaIcon = c.meta?.icon?.toLowerCase() || '';
+                
+                // Search in collection name, note, display template, and icon
+                const matchesSearch = 
+                  collectionName.includes(searchLower) ||
+                  metaNote.includes(searchLower) ||
+                  metaDisplay.includes(searchLower) ||
+                  metaIcon.includes(searchLower);
+                
+                if (!matchesSearch) return false;
+              }
+              
+              return true;
             });
             
             const totalItems = filteredCollections.length;
@@ -2700,9 +2770,30 @@ export function CollectionList({
           const filteredCollections = collections.filter(c => {
             // Filter system collections based on toggle
             if (!showSystemCollections && c.collection.startsWith('directus_')) return false;
-            if (statusFilter === 'existing') return getCollectionStatus(c) === 'existing';
-            if (statusFilter === 'new') return getCollectionStatus(c) === 'new';
-            return false;
+            
+            // Filter by status
+            if (statusFilter === 'existing' && getCollectionStatus(c) !== 'existing') return false;
+            if (statusFilter === 'new' && getCollectionStatus(c) !== 'new') return false;
+            
+            // Filter by search term
+            if (collectionSearchTerm.trim()) {
+              const searchLower = collectionSearchTerm.toLowerCase().trim();
+              const collectionName = c.collection?.toLowerCase() || '';
+              const metaNote = c.meta?.note?.toLowerCase() || '';
+              const metaDisplay = c.meta?.display_template?.toLowerCase() || '';
+              const metaIcon = c.meta?.icon?.toLowerCase() || '';
+              
+              // Search in collection name, note, display template, and icon
+              const matchesSearch = 
+                collectionName.includes(searchLower) ||
+                metaNote.includes(searchLower) ||
+                metaDisplay.includes(searchLower) ||
+                metaIcon.includes(searchLower);
+              
+              if (!matchesSearch) return false;
+            }
+            
+            return true;
           });
           
           const totalItems = filteredCollections.length;
@@ -3425,22 +3516,6 @@ export function CollectionList({
         isVisible={showDocumentation}
         onClose={() => setShowDocumentation(false)} 
       />
-
-      {/* Item Selector Modal */}
-      {showItemSelector && (
-        <ItemSelectorModal
-          collectionName={currentPreviewCollection}
-          items={previewItems}
-          total={previewTotal}
-          selectedIds={selectedItemIds}
-          onSelectionChange={setSelectedItemIds}
-          onClose={() => setShowItemSelector(false)}
-          onImport={handleImportSelected}
-          onLoadMore={() => {}} // No longer needed - all items loaded at once
-          hasMore={false} // Always false since we load all items
-          loading={loadingPreview}
-        />
-      )}
     </div>
   )
 }

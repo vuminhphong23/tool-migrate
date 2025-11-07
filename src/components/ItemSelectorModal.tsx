@@ -35,7 +35,8 @@ export function ItemSelectorModal({
   // Extract fields TRỰC TIẾP từ items + relations - KHÔNG CACHE
   const availableFields = React.useMemo(() => {
     if (items.length === 0) return []
-    if (relations.length === 0) return [] // Chưa có schema
+    // NOTE: Không return [] khi relations.length === 0
+    // Vẫn có thể extract fields từ items, chỉ không đánh dấu relation fields
     
     const firstItem = items[0]
     const fields: {field: string, isM2M: boolean}[] = []
