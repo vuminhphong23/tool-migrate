@@ -101,6 +101,210 @@ export function CollectionList({
     }
   }, [targetUrl, targetToken]);
 
+  // Helper function to find all related collections for a given collection
+  const findRelatedCollections = (collectionName: string, diffData: any): Set<string> => {
+    const relatedCollections = new Set<string>();
+    
+    if (!diffData?.diff) return relatedCollections;
+    
+    // Add the collection itself
+    relatedCollections.add(collectionName);
+    
+    console.log(`🔍 Finding related collections for: ${collectionName}`);
+    
+    // Find all relations involving this collection
+    (diffData.diff.relations || []).forEach((relItem: any) => {
+      // DEBUG: Log the relation structure to understand O2M
+      console.log(`🔗 Checking relation:`, {
+        collection: relItem.collection,
+        field: relItem.field,
+        related_collection: relItem.related_collection,
+        meta: {
+          one_collection: relItem.meta?.one_collection,
+          many_collection: relItem.meta?.many_collection,
+          one_field: relItem.meta?.one_field,
+          many_field: relItem.meta?.many_field,
+          junction_field: relItem.meta?.junction_field,
+          one_allowed_collections: relItem.meta?.one_allowed_collections
+        }
+      });
+      
+      // Check if this relation involves our collection
+      // For O2M: the "many" side collection has the foreign key pointing to "one" side
+      // Example: roles.division_id -> division (roles is "many", division is "one")
+      const involvedInRelation = 
+        relItem.collection === collectionName ||          // This collection has the foreign key field
+        relItem.related_collection === collectionName ||  // This collection is referenced by foreign key
+        relItem.meta?.one_collection === collectionName || // This collection is the "one" side
+        relItem.meta?.many_collection === collectionName;  // This collection is the "many" side
+      
+      if (involvedInRelation) {
+        console.log(`✅ Found related collections for ${collectionName}:`, {
+          collection: relItem.collection,
+          related_collection: relItem.related_collection,
+          one_collection: relItem.meta?.one_collection,
+          many_collection: relItem.meta?.many_collection
+        });
+        
+        // Add all collections involved in this relation
+        if (relItem.collection) relatedCollections.add(relItem.collection);
+        if (relItem.related_collection) relatedCollections.add(relItem.related_collection);
+        if (relItem.meta?.one_collection) relatedCollections.add(relItem.meta.one_collection);
+        if (relItem.meta?.many_collection) relatedCollections.add(relItem.meta.many_collection);
+        
+        // For many-to-many relations, also include junction table
+        if (relItem.meta?.junction_field) {
+          const junctionCollection = relItem.collection;
+          if (junctionCollection) relatedCollections.add(junctionCollection);
+        }
+        
+        // For Many-to-Any (M2A) relations - special Directus relation type
+        // M2A allows a field to relate to multiple different collections
+        if (relItem.meta?.one_allowed_collections && Array.isArray(relItem.meta.one_allowed_collections)) {
+          relItem.meta.one_allowed_collections.forEach((col: string) => {
+            if (col) relatedCollections.add(col);
+          });
+        }
+      }
+    });
+    
+    // Find fields that reference other collections (foreign keys and special interfaces)
+    (diffData.diff.fields || []).forEach((fieldItem: any) => {
+      if (fieldItem.collection === collectionName) {
+        const fieldMeta = fieldItem.meta;
+        const fieldInterface = fieldMeta?.interface || '';
+        
+        // Check for various relation interfaces
+        if (fieldInterface.includes('many-to-one') || 
+            fieldInterface.includes('one-to-many') ||
+            fieldInterface.includes('many-to-many') ||
+            fieldInterface.includes('many-to-any') ||  // M2A interface
+            fieldInterface === 'list-m2m' ||
+            fieldInterface === 'list-m2a' ||
+            fieldInterface === 'list-o2m' ||
+            fieldInterface === 'files' ||              // directus_files relation
+            fieldInterface === 'file' ||               // single file relation
+            fieldInterface === 'user' ||               // directus_users relation
+            fieldInterface === 'select-dropdown-m2o') { // many-to-one dropdown
+          
+          // Extract related collection from field options
+          const options = fieldMeta?.options || {};
+          
+          // Standard foreign key collection
+          if (options.collection) {
+            relatedCollections.add(options.collection);
+          }
+          
+          // For M2A - can have multiple allowed collections
+          if (options.allow && Array.isArray(options.allow)) {
+            options.allow.forEach((col: string) => {
+              if (col) relatedCollections.add(col);
+            });
+          }
+          
+          // For files interface - relates to directus_files
+          if (fieldInterface === 'file' || fieldInterface === 'files' || fieldInterface === 'file-image') {
+            relatedCollections.add('directus_files');
+          }
+          
+          // For user/users interface - relates to directus_users
+          if (fieldInterface === 'user' || fieldInterface === 'select-dropdown-m2o' && options.collection === 'directus_users') {
+            relatedCollections.add('directus_users');
+          }
+          
+          // Parse template to find more related collections
+          if (options.template) {
+            // Template format: "{{field_name}}" - extract collection references
+            const matches = options.template.match(/\{\{([^}]+)\}\}/g);
+            if (matches) {
+              // This would require more sophisticated parsing to extract actual collection names
+              // For now, we rely on explicit collection references
+            }
+          }
+        }
+        
+        // Check field schema for foreign key constraints
+        const fieldSchema = fieldItem.schema;
+        if (fieldSchema?.foreign_key_table) {
+          relatedCollections.add(fieldSchema.foreign_key_table);
+        }
+        
+        // Check for special field types that imply system collection relations
+        const fieldType = fieldSchema?.data_type || fieldItem.type;
+        
+        // UUID fields that commonly reference system collections
+        if (fieldType === 'uuid' || fieldType === 'char') {
+          const fieldName = fieldItem.field?.toLowerCase() || '';
+          
+          // Common patterns for system collection references
+          if (fieldName.includes('user') || fieldName === 'owner' || fieldName === 'created_by' || fieldName === 'modified_by') {
+            relatedCollections.add('directus_users');
+          }
+          if (fieldName.includes('file') || fieldName.includes('image') || fieldName.includes('avatar') || fieldName.includes('thumbnail')) {
+            relatedCollections.add('directus_files');
+          }
+          if (fieldName.includes('folder')) {
+            relatedCollections.add('directus_folders');
+          }
+        }
+      }
+    });
+    
+    // Remove the source collection itself from related collections for cleaner logging
+    relatedCollections.delete(collectionName);
+    
+    console.log(`✅ Final related collections for ${collectionName}:`, Array.from(relatedCollections));
+    
+    // Add back the collection itself
+    relatedCollections.add(collectionName);
+    
+    return relatedCollections;
+  };
+
+  // Auto-select related collections when a collection is selected
+  const handleCollectionSelection = (collectionName: string, isChecked: boolean) => {
+    if (isChecked) {
+      // When selecting, auto-select related collections
+      const relatedCollections = findRelatedCollections(collectionName, schemaDiff);
+      
+      console.log(`📋 handleCollectionSelection for ${collectionName}:`, {
+        relatedCollections: Array.from(relatedCollections),
+        showSystemCollections
+      });
+      
+      // Filter out system collections if not showing them
+      const collectionsToAdd = Array.from(relatedCollections).filter(col => {
+        if (col.startsWith('directus_') && !showSystemCollections) return false;
+        return true;
+      });
+      
+      const newlyAdded = collectionsToAdd.filter(col => !selectedSchemaCollections.includes(col));
+      
+      console.log(`📋 Collections to add:`, {
+        collectionsToAdd,
+        newlyAdded,
+        currentSelected: selectedSchemaCollections
+      });
+      
+      setSelectedSchemaCollections(prev => [...new Set([...prev, ...collectionsToAdd])]);
+      
+      // Show notification if related collections were auto-selected
+      if (newlyAdded.length > 1) {
+        const autoSelected = newlyAdded.filter(col => col !== collectionName);
+        if (autoSelected.length > 0) {
+          onStatusUpdate({
+            type: 'info',
+            message: `✓ Auto-selected ${autoSelected.length} related collection(s): ${autoSelected.join(', ')}`
+          });
+        }
+      }
+    } else {
+      // When deselecting, just remove this collection (don't auto-remove related ones)
+      // User might want to keep related collections selected
+      setSelectedSchemaCollections(prev => prev.filter(c => c !== collectionName));
+    }
+  };
+
   // Load source relations for data migration
   React.useEffect(() => {
     const loadSourceRelations = async () => {
@@ -245,6 +449,15 @@ export function CollectionList({
       return;
     }
     
+    // Check if any collections are selected
+    if (selectedSchemaCollections.length === 0) {
+      onStatusUpdate({ 
+        type: 'warning', 
+        message: '⚠️ No collections selected. Please check the collections you want to migrate.' 
+      });
+      return;
+    }
+    
     setSchemaMigrationStep('apply');
     setLoading('schema_apply', true);
     
@@ -252,48 +465,228 @@ export function CollectionList({
       const { DirectusClient } = await import('../lib/DirectusClient');
       const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      // Filter out system collections (directus_*) but keep all relations
-      // Relations to system collections are allowed and necessary
-      const filteredCollections = (schemaDiff.diff.collections || []).filter((col: any) => 
-        col.collection && !col.collection.startsWith('directus_')
-      );
+      // Create a Set for faster lookup
+      const selectedSet = new Set(selectedSchemaCollections);
       
-      const filteredFields = (schemaDiff.diff.fields || []).filter((field: any) => 
-        field.collection && !field.collection.startsWith('directus_')
-      );
+      // Debug: Log original diff structure
+      console.log('📋 Original Schema Diff Structure:', {
+        collections: schemaDiff.diff.collections?.length || 0,
+        fields: schemaDiff.diff.fields?.length || 0,
+        relations: schemaDiff.diff.relations?.length || 0,
+        selectedCollections: Array.from(selectedSet)
+      });
       
-      // Keep ALL relations - even those pointing to system collections
-      const filteredRelations = schemaDiff.diff.relations || [];
+      // Sample first few items for debugging
+      if (schemaDiff.diff.fields && schemaDiff.diff.fields.length > 0) {
+        console.log('📝 Sample Field Diff Items:', schemaDiff.diff.fields.slice(0, 3));
+      }
+      if (schemaDiff.diff.collections && schemaDiff.diff.collections.length > 0) {
+        console.log('📦 Sample Collection Diff Items:', schemaDiff.diff.collections.slice(0, 3));
+      }
+      
+      // Filter based on:
+      // 1. Selected collections only
+      // 2. Exclude system collections (directus_*) unless explicitly selected by user with system toggle on
+      const filteredCollections = (schemaDiff.diff.collections || []).filter((col: any) => {
+        if (!col.collection) return false;
+        // Only include if selected
+        const isSelected = selectedSet.has(col.collection);
+        // If system collection, only include if user has enabled system collections view
+        if (col.collection.startsWith('directus_') && !showSystemCollections) return false;
+        
+        if (!isSelected) {
+          console.log(`⏭️  Skipping collection: ${col.collection} (not selected)`);
+        }
+        return isSelected;
+      });
+      
+      // Filter fields: only include fields from selected collections
+      // IMPORTANT: Each field item contains {collection, field, diff: [...]}
+      // The 'diff' array inside contains the actual changes with kind: 'N'/'E'/'D'
+      const filteredFields = (schemaDiff.diff.fields || []).filter((fieldItem: any) => {
+        if (!fieldItem.collection) {
+          console.log('⚠️  Field item without collection:', fieldItem);
+          return false;
+        }
+        
+        // Only include if collection is selected
+        const isSelected = selectedSet.has(fieldItem.collection);
+        
+        // If system collection, only include if user has enabled system collections view
+        if (fieldItem.collection.startsWith('directus_') && !showSystemCollections) {
+          return false;
+        }
+        
+        if (!isSelected) {
+          console.log(`⏭️  Skipping field: ${fieldItem.collection}.${fieldItem.field} (collection not selected)`);
+        } else {
+          // Log what we're including for debugging
+          const diffCount = fieldItem.diff?.length || 0;
+          const hasChanges = fieldItem.diff?.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+          console.log(`✅ Including field: ${fieldItem.collection}.${fieldItem.field} (${diffCount} diff items, has changes: ${hasChanges})`);
+        }
+        
+        return isSelected;
+      });
+      
+      // Filter relations: Include ALL relations where ANY of the involved collections is selected
+      // Relations are critical for data integrity and can involve multiple collections
+      // IMPORTANT: Each relation item contains {collection, field, related_collection, meta, diff: [...]}
+      const filteredRelations = (schemaDiff.diff.relations || []).filter((relItem: any) => {
+        // Get all collections involved in this relation
+        const involvedCollections = new Set<string>();
+        
+        // Primary collection (where the relation field lives)
+        if (relItem.collection) involvedCollections.add(relItem.collection);
+        
+        // Related collection (the target of the relation)
+        if (relItem.related_collection) involvedCollections.add(relItem.related_collection);
+        
+        // Meta collections (for m2m, m2o, o2m relations)
+        // These come from the actual relation metadata
+        if (relItem.meta?.one_collection) involvedCollections.add(relItem.meta.one_collection);
+        if (relItem.meta?.many_collection) involvedCollections.add(relItem.meta.many_collection);
+        
+        // For junction tables in m2m relations
+        if (relItem.meta?.junction_field) {
+          const junctionCollection = relItem.collection;
+          if (junctionCollection) involvedCollections.add(junctionCollection);
+        }
+        
+        // Include relation if ANY of the involved collections is selected
+        // This ensures we don't break relationships when migrating a collection
+        const shouldInclude = Array.from(involvedCollections).some(col => {
+          // Skip system collections unless user explicitly enabled them
+          if (col.startsWith('directus_') && !showSystemCollections) return false;
+          return selectedSet.has(col);
+        });
+        
+        if (shouldInclude) {
+          const diffCount = relItem.diff?.length || 0;
+          const hasChanges = relItem.diff?.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+          console.log(`✅ Including relation: ${relItem.collection}.${relItem.field} → ${relItem.related_collection} (${diffCount} diff items, has changes: ${hasChanges})`);
+        } else {
+          console.log(`⏭️  Skipping relation: ${relItem.collection}.${relItem.field} → ${relItem.related_collection} (no involved collection selected)`);
+        }
+        
+        return shouldInclude;
+      });
+      
+      // Additional validation: Remove items with empty or invalid diffs
+      const validFilteredCollections = filteredCollections.filter((col: any) => {
+        if (!col.diff || !Array.isArray(col.diff) || col.diff.length === 0) {
+          console.log(`⚠️  Collection ${col.collection} has no diff array, skipping...`);
+          return false;
+        }
+        const hasRealChanges = col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+        if (!hasRealChanges) {
+          console.log(`⚠️  Collection ${col.collection} has no real changes (N/E/D), skipping...`);
+        }
+        return hasRealChanges;
+      });
+      
+      const validFilteredFields = filteredFields.filter((field: any) => {
+        if (!field.diff || !Array.isArray(field.diff) || field.diff.length === 0) {
+          console.log(`⚠️  Field ${field.collection}.${field.field} has no diff array, skipping...`);
+          return false;
+        }
+        const hasRealChanges = field.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+        if (!hasRealChanges) {
+          console.log(`⚠️  Field ${field.collection}.${field.field} has no real changes, skipping...`);
+        }
+        return hasRealChanges;
+      });
+      
+      const validFilteredRelations = filteredRelations.filter((rel: any) => {
+        if (!rel.diff || !Array.isArray(rel.diff) || rel.diff.length === 0) {
+          console.log(`⚠️  Relation ${rel.collection}.${rel.field} has no diff array, skipping...`);
+          return false;
+        }
+        const hasRealChanges = rel.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+        if (!hasRealChanges) {
+          console.log(`⚠️  Relation ${rel.collection}.${rel.field} has no real changes, skipping...`);
+        }
+        return hasRealChanges;
+      });
       
       const filteredDiff = {
         hash: schemaDiff.hash,
         diff: {
-          collections: filteredCollections,
-          fields: filteredFields,
-          relations: filteredRelations
+          collections: validFilteredCollections,
+          fields: validFilteredFields,
+          relations: validFilteredRelations
         }
       };
       
+      // Log for debugging
+      console.log('🔍 Migration Strategy Summary:', {
+        selectedCollections: Array.from(selectedSet),
+        initialFiltered: {
+          collections: filteredCollections.length,
+          fields: filteredFields.length,
+          relations: filteredRelations.length
+        },
+        validFiltered: {
+          collections: validFilteredCollections.length,
+          fields: validFilteredFields.length,
+          relations: validFilteredRelations.length
+        }
+      });
+      
+      // Detailed logging for filtered items
+      console.log('✅ Valid Collections to Apply:', validFilteredCollections.map((c: any) => c.collection));
+      console.log('✅ Valid Fields by Collection:', 
+        validFilteredFields.reduce((acc: any, f: any) => {
+          if (!acc[f.collection]) acc[f.collection] = [];
+          acc[f.collection].push(f.field);
+          return acc;
+        }, {})
+      );
+      console.log('✅ Valid Relations:', validFilteredRelations.map((rel: any) => ({
+        collection: rel.collection,
+        field: rel.field,
+        related_collection: rel.related_collection,
+        type: rel.meta?.many_collection ? 'o2m/m2m' : rel.meta?.one_collection ? 'm2o' : 'unknown'
+      })));
+      
       // Check if there's anything to apply
-      if (filteredCollections.length === 0 && filteredFields.length === 0 && filteredRelations.length === 0) {
+      if (validFilteredCollections.length === 0 && validFilteredFields.length === 0 && validFilteredRelations.length === 0) {
         onStatusUpdate({ 
           type: 'warning', 
-          message: '⚠️ No custom collections to migrate. System collections cannot be migrated.' 
+          message: '⚠️ No actual changes to apply for selected collections. All selected collections may already be in sync with the target.' 
         });
         setSchemaMigrationStep('complete');
         return;
       }
       
+      // Show confirmation with detailed info
+      const relationsSummary = filteredRelations.length > 0 
+        ? `\n📊 Relations included: ${filteredRelations.length} (including cross-collection relationships)`
+        : '';
+      
+      console.log(`📦 Applying schema changes:
+- Collections: ${filteredCollections.length}
+- Fields: ${filteredFields.length}
+- Relations: ${filteredRelations.length}${relationsSummary}`);
+      
       // POST the filtered diff to /schema/apply?force=true
       await targetClient.post('/schema/apply?force=true', filteredDiff);
       
-      const collectionsCount = filteredCollections.length;
-      const fieldsCount = filteredFields.length;
-      const relationsCount = filteredRelations.length;
+      const collectionsCount = validFilteredCollections.length;
+      const fieldsCount = validFilteredFields.length;
+      const relationsCount = validFilteredRelations.length;
+      
+      // Track migrated collections (include both collection-level and field-level changes)
+      const migratedColNames = new Set([
+        ...validFilteredCollections.map((col: any) => col.collection),
+        ...validFilteredFields.map((field: any) => field.collection),
+        ...validFilteredRelations.map((rel: any) => rel.collection)
+      ].filter(Boolean));
+      setMigratedCollections(prev => [...new Set([...prev, ...Array.from(migratedColNames)])]);
       
       onStatusUpdate({ 
         type: 'success', 
-        message: `✅ Schema applied! ${collectionsCount} collections, ${fieldsCount} fields, ${relationsCount} relations` 
+        message: `✅ Schema applied successfully! ${collectionsCount} collection(s), ${fieldsCount} field(s), ${relationsCount} relation(s) migrated from ${selectedSchemaCollections.length} selected collection(s)` 
       });
       
       setSchemaMigrationStep('complete');
@@ -859,24 +1252,44 @@ export function CollectionList({
 
           {/* Step 3: Apply */}
           <button
-            onClick={handleSchemaApply}
-            disabled={!schemaDiff || loading.schema_apply || schemaMigrationStep === 'complete'}
+            onClick={() => {
+              if (selectedSchemaCollections.length === 0) {
+                onStatusUpdate({
+                  type: 'error',
+                  message: '⚠️ Please select at least one collection to migrate'
+                });
+                return;
+              }
+              
+              // Show confirmation if user is migrating system collections
+              const hasSystemCollections = selectedSchemaCollections.some(col => col.startsWith('directus_'));
+              if (hasSystemCollections && !confirm(
+                `⚠️ WARNING: You are about to migrate ${selectedSchemaCollections.filter(c => c.startsWith('directus_')).length} system collection(s).\n\n` +
+                `This can affect core Directus functionality. Are you sure you want to proceed?`
+              )) {
+                return;
+              }
+              
+              handleSchemaApply();
+            }}
+            disabled={!schemaDiff || loading.schema_apply || schemaMigrationStep === 'complete' || selectedSchemaCollections.length === 0}
             style={{
-              backgroundColor: schemaMigrationStep === 'apply' && !loading.schema_apply ? '#dc2626' : 
+              backgroundColor: schemaMigrationStep === 'apply' && !loading.schema_apply && selectedSchemaCollections.length > 0 ? '#dc2626' : 
                              schemaMigrationStep === 'complete' ? '#10b981' : '#9ca3af',
               color: 'white',
               padding: '0.75rem 1rem',
               fontWeight: '500',
               borderRadius: '6px',
               border: 'none',
-              cursor: (!schemaDiff || loading.schema_apply) ? 'not-allowed' : 'pointer',
-              opacity: (!schemaDiff || loading.schema_apply) ? 0.7 : 1,
+              cursor: (!schemaDiff || loading.schema_apply || selectedSchemaCollections.length === 0) ? 'not-allowed' : 'pointer',
+              opacity: (!schemaDiff || loading.schema_apply || selectedSchemaCollections.length === 0) ? 0.7 : 1,
               fontSize: '0.875rem'
             }}
+            title={selectedSchemaCollections.length === 0 ? 'Please select collections first' : `Apply ${selectedSchemaCollections.length} selected collection(s)`}
           >
             {loading.schema_apply ? '⚡ Applying Changes...' : 
-             schemaMigrationStep === 'apply' ? '3️⃣ Apply to Target' : 
-             schemaMigrationStep === 'complete' ? '✅ Migration Complete' : '3️⃣ Apply to Target'}
+             schemaMigrationStep === 'apply' ? `3️⃣ Apply to Target` : 
+             schemaMigrationStep === 'complete' ? '✅ Migration Complete' : `3️⃣ Apply to Target`}
           </button>
 
           {/* Reset Button */}
@@ -942,11 +1355,24 @@ export function CollectionList({
           ].filter((col: any) => {
             // Must be selected
             if (!selectedSet.has(col.collection)) return false;
-            // Must have valid diff with changes
-            if (!col.diff || !Array.isArray(col.diff) || col.diff.length === 0) return false;
-            // Check if has actual change kinds (N/E/D)
-            const hasRealChange = col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
-            return hasRealChange;
+            
+            // Check if has actual changes:
+            // 1. Collection-level diff with real changes (N/E/D)
+            const hasCollectionDiff = col.diff && Array.isArray(col.diff) && col.diff.length > 0 
+              && col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+            
+            // 2. Field changes (new, modified, deleted fields)
+            const hasFieldChanges = (col.newFieldsCount && col.newFieldsCount > 0) ||
+                                   (col.deletedFieldsCount && col.deletedFieldsCount > 0) ||
+                                   (col.modifiedFieldsCount && col.modifiedFieldsCount > 0);
+            
+            // 3. Relation changes
+            const hasRelationChanges = col.relations && col.relations.length > 0;
+            
+            // 4. For new/deleted collections, they always have changes
+            const isNewOrDeleted = col.action === 'create' || col.action === 'delete';
+            
+            return hasCollectionDiff || hasFieldChanges || hasRelationChanges || isNewOrDeleted;
           }).length;
           
           return (
@@ -974,6 +1400,34 @@ export function CollectionList({
                   </div>
                 </div>
               )}
+              
+              {/* Migration Strategy Info */}
+              <div style={{
+                padding: '0.75rem 1rem',
+                backgroundColor: '#e0f2fe',
+                borderRadius: '6px',
+                border: '1px solid #0284c7',
+                marginBottom: '1rem'
+              }}>
+                <div style={{ fontSize: '0.875rem', fontWeight: '600', color: '#075985', marginBottom: '0.5rem' }}>
+                  🎯 Migration Strategy - Select What to Apply:
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#0c4a6e', lineHeight: '1.5' }}>
+                  ✓ Check the collections you want to migrate to target environment<br/>
+                  ✓ Only checked collections will be applied when you click "Apply to Target"<br/>
+                  ✓ You can select individual collections or use "Select All" / "Clear" buttons<br/>
+                  {selectedSchemaCollections.length > 0 ? (
+                    <span style={{ fontWeight: '600', color: '#0284c7' }}>
+                      ✓ Currently selected: {selectedSchemaCollections.length} collection(s) - {collectionsToApply} with actual changes ready to apply
+                    </span>
+                  ) : (
+                    <span style={{ fontWeight: '600', color: '#dc2626' }}>
+                      ⚠️ No collections selected - please select at least one collection to migrate
+                    </span>
+                  )}
+                </div>
+              </div>
+              
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <h4 style={{ margin: 0, color: '#9a3412', fontSize: '1rem' }}>
                   📊 Schema Differences: {totalCollections} collection(s) ({selectedSchemaCollections.length} checked, {collectionsToApply} with changes)
@@ -1028,12 +1482,17 @@ export function CollectionList({
                   </button>
                   <button
                     onClick={() => {
-                      const allCollections = [
-                        ...newCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection),
-                        ...modifiedCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection),
-                        ...deletedCollections.filter((c: any) => showSystemCollections || !c.collection.startsWith('directus_')).map((c: any) => c.collection)
+                      // Select all visible collections based on current filter and system toggle
+                      const visibleCollections = [
+                        ...filteredNewCollections.map((c: any) => c.collection),
+                        ...filteredModifiedCollections.map((c: any) => c.collection),
+                        ...filteredDeletedCollections.map((c: any) => c.collection)
                       ];
-                      setSelectedSchemaCollections(allCollections);
+                      setSelectedSchemaCollections(visibleCollections);
+                      onStatusUpdate({
+                        type: 'info',
+                        message: `✓ Selected ${visibleCollections.length} visible collection(s)`
+                      });
                     }}
                     style={{
                       padding: '0.25rem 0.75rem',
@@ -1045,11 +1504,21 @@ export function CollectionList({
                       cursor: 'pointer',
                       fontWeight: '500'
                     }}
+                    title="Select all visible collections (based on current filter)"
                   >
                     Select All
                   </button>
                   <button
-                    onClick={() => setSelectedSchemaCollections([])}
+                    onClick={() => {
+                      const previousCount = selectedSchemaCollections.length;
+                      setSelectedSchemaCollections([]);
+                      if (previousCount > 0) {
+                        onStatusUpdate({
+                          type: 'info',
+                          message: `✓ Cleared ${previousCount} selected collection(s)`
+                        });
+                      }
+                    }}
                     style={{
                       padding: '0.25rem 0.75rem',
                       fontSize: '0.75rem',
@@ -1059,6 +1528,7 @@ export function CollectionList({
                       borderRadius: '4px',
                       cursor: 'pointer'
                     }}
+                    title="Clear all selections"
                   >
                     Clear
                   </button>
@@ -1093,17 +1563,39 @@ export function CollectionList({
                               type="checkbox"
                               checked={selectedSchemaCollections.includes(col.collection)}
                               onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedSchemaCollections(prev => [...prev, col.collection]);
-                                } else {
-                                  setSelectedSchemaCollections(prev => prev.filter(c => c !== col.collection));
-                                }
+                                handleCollectionSelection(col.collection, e.target.checked);
                               }}
                               style={{ marginTop: '0.25rem', cursor: 'pointer' }}
                             />
                             <div style={{ flex: 1 }}>
-                              <div style={{ fontWeight: '600', color: '#065f46', marginBottom: '0.25rem' }}>
-                                {col.collection}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                <div style={{ fontWeight: '600', color: '#065f46' }}>
+                                  {col.collection}
+                                </div>
+                                {selectedSchemaCollections.includes(col.collection) && (
+                                  <span style={{
+                                    padding: '0.125rem 0.5rem',
+                                    fontSize: '0.625rem',
+                                    backgroundColor: '#10b981',
+                                    color: 'white',
+                                    borderRadius: '9999px',
+                                    fontWeight: '600'
+                                  }}>
+                                    ✓ SELECTED
+                                  </span>
+                                )}
+                                {col.collection.startsWith('directus_') && (
+                                  <span style={{
+                                    padding: '0.125rem 0.5rem',
+                                    fontSize: '0.625rem',
+                                    backgroundColor: '#dc2626',
+                                    color: 'white',
+                                    borderRadius: '9999px',
+                                    fontWeight: '600'
+                                  }}>
+                                    SYSTEM
+                                  </span>
+                                )}
                               </div>
                               {col.fields && col.fields.length > 0 && (
                                 <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '0.5rem' }}>
@@ -1156,11 +1648,7 @@ export function CollectionList({
                                 checked={selectedSchemaCollections.includes(col.collection)}
                                 onChange={(e) => {
                                   e.stopPropagation();
-                                  if (e.target.checked) {
-                                    setSelectedSchemaCollections(prev => [...prev, col.collection]);
-                                  } else {
-                                    setSelectedSchemaCollections(prev => prev.filter(c => c !== col.collection));
-                                  }
+                                  handleCollectionSelection(col.collection, e.target.checked);
                                 }}
                                 style={{ marginTop: '0.25rem', cursor: 'pointer' }}
                               />
@@ -1171,8 +1659,34 @@ export function CollectionList({
                                   justifyContent: 'space-between',
                                   marginBottom: '0.5rem'
                                 }}>
-                                  <div style={{ fontWeight: '600', color: '#92400e' }}>
-                                    {col.collection}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <div style={{ fontWeight: '600', color: '#92400e' }}>
+                                      {col.collection}
+                                    </div>
+                                    {selectedSchemaCollections.includes(col.collection) && (
+                                      <span style={{
+                                        padding: '0.125rem 0.5rem',
+                                        fontSize: '0.625rem',
+                                        backgroundColor: '#f59e0b',
+                                        color: 'white',
+                                        borderRadius: '9999px',
+                                        fontWeight: '600'
+                                      }}>
+                                        ✓ SELECTED
+                                      </span>
+                                    )}
+                                    {col.collection.startsWith('directus_') && (
+                                      <span style={{
+                                        padding: '0.125rem 0.5rem',
+                                        fontSize: '0.625rem',
+                                        backgroundColor: '#dc2626',
+                                        color: 'white',
+                                        borderRadius: '9999px',
+                                        fontWeight: '600'
+                                      }}>
+                                        SYSTEM
+                                      </span>
+                                    )}
                                   </div>
                                   {hasDetails && (
                                     <button
@@ -1381,23 +1895,45 @@ export function CollectionList({
                           borderRadius: '6px',
                           padding: '0.75rem'
                         }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
                             <input
                               type="checkbox"
                               checked={selectedSchemaCollections.includes(col.collection)}
                               onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedSchemaCollections(prev => [...prev, col.collection]);
-                                } else {
-                                  setSelectedSchemaCollections(prev => prev.filter(c => c !== col.collection));
-                                }
+                                handleCollectionSelection(col.collection, e.target.checked);
                               }}
-                              style={{ cursor: 'pointer' }}
+                              style={{ marginTop: '0.25rem', cursor: 'pointer' }}
                             />
                             <div style={{ flex: 1 }}>
-                              <span style={{ fontWeight: '600', color: '#991b1b' }}>{col.collection}</span>
-                              <span style={{ fontSize: '0.75rem', color: '#dc2626', marginLeft: '0.5rem' }}>
-                                ⚠️ Will be deleted from target
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                <span style={{ fontWeight: '600', color: '#991b1b' }}>{col.collection}</span>
+                                {selectedSchemaCollections.includes(col.collection) && (
+                                  <span style={{
+                                    padding: '0.125rem 0.5rem',
+                                    fontSize: '0.625rem',
+                                    backgroundColor: '#dc2626',
+                                    color: 'white',
+                                    borderRadius: '9999px',
+                                    fontWeight: '600'
+                                  }}>
+                                    ✓ SELECTED
+                                  </span>
+                                )}
+                                {col.collection.startsWith('directus_') && (
+                                  <span style={{
+                                    padding: '0.125rem 0.5rem',
+                                    fontSize: '0.625rem',
+                                    backgroundColor: '#dc2626',
+                                    color: 'white',
+                                    borderRadius: '9999px',
+                                    fontWeight: '600'
+                                  }}>
+                                    SYSTEM
+                                  </span>
+                                )}
+                              </div>
+                              <span style={{ fontSize: '0.75rem', color: '#dc2626' }}>
+                                ⚠️ Will be deleted from target environment
                               </span>
                             </div>
                           </label>

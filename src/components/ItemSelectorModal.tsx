@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 
 interface ItemSelectorModalProps {
   collectionName: string
@@ -30,67 +30,133 @@ export function ItemSelectorModal({
   const [searchTerm, setSearchTerm] = useState('')
   const [selectAll, setSelectAll] = useState(false)
   const [selectedFields, setSelectedFields] = useState<string[]>([])
-  const [availableFields, setAvailableFields] = useState<{field: string, isM2M: boolean}[]>([])
   const [showFieldSelector, setShowFieldSelector] = useState(false)
-
-  // Extract available fields from items
-  useEffect(() => {
-    if (items.length > 0) {
-      const firstItem = items[0]
-      const fields: {field: string, isM2M: boolean}[] = []
-      const systemFields = ['id', 'date_created', 'date_updated', 'user_created', 'user_updated']
+  
+  // Extract fields TRỰC TIẾP từ items + relations - KHÔNG CACHE
+  const availableFields = React.useMemo(() => {
+    if (items.length === 0) return []
+    if (relations.length === 0) return [] // Chưa có schema
+    
+    const firstItem = items[0]
+    const fields: {field: string, isM2M: boolean}[] = []
+    const systemFields = ['id', 'date_created', 'date_updated', 'user_created', 'user_updated']
+    
+    console.log(`🔍 [ItemSelectorModal] Analyzing fields for collection: ${collectionName}`)
+    console.log(`📦 First item keys:`, Object.keys(firstItem))
+    console.log(`🔗 Relations count:`, relations?.length || 0)
+    
+    // Log ALL relations for debugging
+    if (relations && relations.length > 0) {
+      console.log(`📋 All relations involving "${collectionName}":`)
+      relations.forEach((rel: any, idx: number) => {
+        console.log(`  ${idx + 1}.`, {
+          collection: rel.collection,
+          field: rel.field,
+          related_collection: rel.related_collection,
+          meta: {
+            one_collection: rel.meta?.one_collection,
+            many_collection: rel.meta?.many_collection,
+            one_field: rel.meta?.one_field,
+            many_field: rel.meta?.many_field,
+            junction_field: rel.meta?.junction_field,
+            one_allowed_collections: rel.meta?.one_allowed_collections
+          }
+        })
+      })
+    }
+    
+    Object.keys(firstItem).forEach(key => {
+      if (systemFields.includes(key)) return
       
-      Object.keys(firstItem).forEach(key => {
-        if (systemFields.includes(key)) return
-        
-        const value = firstItem[key]
-        let isRelationField = false
-        
-        // Check if this field has a relation definition in schema
-        if (relations && relations.length > 0) {
-          // M2O: This collection has a foreign key field pointing to another collection
-          const hasM2O = relations.some((rel: any) => 
-            rel.collection === collectionName && rel.field === key
-          )
-          
-          // O2M: Another collection points to this one, and we have the reverse field
-          const hasO2M = relations.some((rel: any) => 
-            rel.related_collection === collectionName && 
-            rel.meta?.one_field === key
-          )
-          
-          // M2M: This is part of a many-to-many via junction table
-          const hasM2M = relations.some((rel: any) => 
-            (rel.collection === collectionName && rel.meta?.junction_field) ||
-            (rel.related_collection === collectionName && rel.meta?.junction_field)
-          )
-          
-          if (hasM2O || hasO2M || hasM2M) {
-            isRelationField = true
-          }
-        }
-        
-        // Fallback: Detect by value structure when no relations metadata
-        if (!isRelationField) {
-          // Arrays often indicate O2M or M2M relationships
-          if (Array.isArray(value) && value.length > 0) {
-            // M2A has structure: [{collection: 'xxx', item: 'yyy'}, ...]
-            if (value[0]?.collection && (value[0]?.item !== undefined)) {
-              isRelationField = true // M2A
-            } 
-            // Regular array of IDs or objects indicates O2M/M2M
-            else if (typeof value[0] === 'string' || typeof value[0] === 'number' || typeof value[0] === 'object') {
-              isRelationField = true
-            }
-          }
-        }
-        
-        fields.push({ field: key, isM2M: isRelationField })
+      const value = firstItem[key]
+      let isRelationField = false
+      let detectionMethod = 'none'
+      
+      console.log(`\n🔎 Checking field: ${key}`, {
+        valueType: Array.isArray(value) ? 'array' : typeof value,
+        hasValue: value !== null && value !== undefined,
+        valuePreview: Array.isArray(value) ? `array[${value.length}]` : typeof value === 'object' ? 'object' : String(value).substring(0, 50)
       })
       
-      setAvailableFields(fields)
-    }
+      // Check if this field has a relation definition in schema
+      if (relations && relations.length > 0) {
+        // M2O: Many-to-One (this collection has FK pointing to another collection)
+        // Example: Answer_PA.division -> division
+        const m2oRelations = relations.filter((rel: any) => 
+          rel.collection === collectionName && rel.field === key
+        )
+        
+        if (m2oRelations.length > 0) {
+          console.log(`  ✓ M2O detected:`, m2oRelations.map((r: any) => `${r.collection}.${r.field} -> ${r.related_collection}`))
+          isRelationField = true
+          detectionMethod = 'M2O relation schema'
+        }
+        
+        // O2M: One-to-Many (another collection points to this one, virtual field)
+        // Example: Answer_PA.items (virtual field showing Item_PA where Item_PA.answer_pa -> Answer_PA.id)
+        const o2mRelations = relations.filter((rel: any) => 
+          rel.related_collection === collectionName && 
+          rel.meta?.one_field === key
+        )
+        
+        if (o2mRelations.length > 0) {
+          console.log(`  ✓ O2M detected:`, o2mRelations.map((r: any) => `${r.related_collection}.${r.meta?.one_field} <- ${r.collection}.${r.field}`))
+          isRelationField = true
+          detectionMethod = 'O2M relation schema'
+        }
+        
+        // M2M: Many-to-Many via junction table
+        const m2mRelations = relations.filter((rel: any) => {
+          const isJunctionRelation = rel.meta?.junction_field !== null && rel.meta?.junction_field !== undefined
+          if (!isJunctionRelation) return false
+          
+          // This collection has M2M field
+          if (rel.collection === collectionName && rel.field === key) return true
+          // This collection is the "one" side of M2M
+          if (rel.related_collection === collectionName && rel.meta?.one_field === key) return true
+          
+          return false
+        })
+        
+        if (m2mRelations.length > 0) {
+          console.log(`  ✓ M2M detected:`, m2mRelations.map((r: any) => `via junction: ${r.meta?.junction_field}`))
+          isRelationField = true
+          detectionMethod = 'M2M relation schema'
+        }
+        
+        // M2A: Many-to-Any (field can relate to multiple different collections)
+        const m2aRelations = relations.filter((rel: any) => {
+          if (rel.collection !== collectionName || rel.field !== key) return false
+          return rel.meta?.one_allowed_collections && Array.isArray(rel.meta.one_allowed_collections)
+        })
+        
+        if (m2aRelations.length > 0) {
+          console.log(`  ✓ M2A detected:`, m2aRelations.map((r: any) => `allowed: ${r.meta?.one_allowed_collections?.join(', ')}`))
+          isRelationField = true
+          detectionMethod = 'M2A relation schema'
+        }
+      }
+      
+      if (isRelationField) {
+        console.log(`  ✅ FINAL: "${key}" is a RELATION field (${detectionMethod})`)
+      } else {
+        console.log(`  ❌ FINAL: "${key}" is NOT a relation field`)
+      }
+      
+      fields.push({ field: key, isM2M: isRelationField })
+    })
+    
+    console.log(`\n✅ Summary: ${fields.filter(f => f.isM2M).length} relation fields out of ${fields.length} total`)
+    console.log(`📊 Relation fields:`, fields.filter(f => f.isM2M).map(f => f.field))
+    console.log(`📊 Regular fields:`, fields.filter(f => !f.isM2M).map(f => f.field))
+    
+    return fields
   }, [items, relations, collectionName])
+
+  // Reset selected fields when collection changes
+  useEffect(() => {
+    setSelectedFields([])
+  }, [collectionName])
 
   // Filter items based on search
   const filteredItems = items.filter(item => {
@@ -128,9 +194,12 @@ export function ItemSelectorModal({
   }
 
   // Update selectAll state when selection changes
+  // Note: Only depend on selectedIds and items.length, not the entire filteredItems array
   useEffect(() => {
-    setSelectAll(filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id)))
-  }, [selectedIds, filteredItems])
+    const isAllSelected = filteredItems.length > 0 && 
+                         filteredItems.every(item => selectedIds.includes(item.id))
+    setSelectAll(isAllSelected)
+  }, [selectedIds, items.length, searchTerm]) // Fixed: depend on items.length and searchTerm, not filteredItems
 
   // Get display value for an item
   const getItemDisplayText = (item: any): string => {
@@ -153,82 +222,6 @@ export function ItemSelectorModal({
         return `${key}: ${value}`
       })
       .join(', ')
-  }
-
-  // Get missing dependencies for an item
-  const getItemDependencies = (item: any): Array<{ field: string; collection: string; value: any }> => {
-    if (!relations || relations.length === 0) return []
-    
-    const missingDeps: Array<{ field: string; collection: string; value: any }> = []
-    
-    relations.forEach((relation: any) => {
-      // M2O: Many-to-One (current collection → related collection)
-      if (relation.collection === collectionName && relation.related_collection) {
-        const fieldName = relation.field
-        const relatedCollection = relation.related_collection
-        
-        // Check if item has a value for this FK field
-        const value = item[fieldName]
-        if (value !== null && value !== undefined) {
-          missingDeps.push({
-            field: fieldName,
-            collection: relatedCollection,
-            value: value
-          })
-        }
-      }
-      
-      // O2M: One-to-Many (check reverse relation)
-      if (relation.related_collection === collectionName && relation.meta?.one_field) {
-        const fieldName = relation.meta.one_field
-        const relatedCollection = relation.collection
-        
-        const value = item[fieldName]
-        if (Array.isArray(value) && value.length > 0) {
-          missingDeps.push({
-            field: fieldName,
-            collection: relatedCollection,
-            value: value
-          })
-        }
-      }
-      
-      // M2M: Many-to-Many (through junction table)
-      if (relation.meta?.junction_field === collectionName) {
-        const fieldName = relation.field
-        const junctionCollection = relation.collection
-        
-        const value = item[fieldName]
-        if (Array.isArray(value) && value.length > 0) {
-          missingDeps.push({
-            field: fieldName,
-            collection: junctionCollection,
-            value: value
-          })
-        }
-      }
-    })
-    
-    // M2A: Many-to-Any (special case - array of {collection, item})
-    Object.keys(item).forEach(key => {
-      const value = item[key]
-      if (Array.isArray(value) && value.length > 0) {
-        // Check if it's M2A structure
-        if (value[0]?.collection && value[0]?.item) {
-          // Each item in M2A can reference different collections
-          const collections = [...new Set(value.map((v: any) => v.collection))]
-          collections.forEach(col => {
-            missingDeps.push({
-              field: key,
-              collection: col,
-              value: value.filter((v: any) => v.collection === col).map((v: any) => v.item)
-            })
-          })
-        }
-      }
-    })
-    
-    return missingDeps
   }
 
   return (
@@ -369,7 +362,17 @@ export function ItemSelectorModal({
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {availableFields.map(({field, isM2M}) => (
+                {availableFields.length === 0 ? (
+                  <div style={{
+                    padding: '1rem',
+                    textAlign: 'center',
+                    color: '#6b7280',
+                    fontSize: '0.875rem'
+                  }}>
+                    ⏳ Loading schema information...
+                  </div>
+                ) : (
+                  availableFields.map(({field, isM2M}) => (
                   <label
                     key={field}
                     style={{
@@ -399,10 +402,11 @@ export function ItemSelectorModal({
                       {isM2M && <span style={{ marginLeft: '0.5rem', color: '#f59e0b', fontSize: '0.75rem' }}>🔗 Relation</span>}
                     </span>
                   </label>
-                ))}
+                  ))
+                )}
               </div>
 
-              {selectedFields.length === 0 && (
+              {selectedFields.length === 0 && availableFields.length > 0 && (
                 <div style={{
                   marginTop: '0.75rem',
                   padding: '0.75rem',
@@ -561,33 +565,6 @@ export function ItemSelectorModal({
                       }}>
                         {getItemPreview(item)}
                       </div>
-                      
-                      {/* Item Dependencies Note */}
-                      {(() => {
-                        const deps = getItemDependencies(item)
-                        if (deps.length > 0) {
-                          return (
-                            <div style={{
-                              marginTop: '0.5rem',
-                              padding: '0.375rem 0.5rem',
-                              backgroundColor: '#fef3c7',
-                              borderLeft: '3px solid #f59e0b',
-                              borderRadius: '4px',
-                              fontSize: '0.7rem',
-                              color: '#92400e'
-                            }}>
-                              <strong>⚠️ Needs:</strong>{' '}
-                              {deps.map((dep, idx) => (
-                                <span key={idx}>
-                                  {dep.collection} (ID: {dep.value})
-                                  {idx < deps.length - 1 ? ', ' : ''}
-                                </span>
-                              ))}
-                            </div>
-                          )
-                        }
-                        return null
-                      })()}
                     </div>
                   </label>
                 ))}
