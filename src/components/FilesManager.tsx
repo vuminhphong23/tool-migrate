@@ -22,23 +22,22 @@ export function FilesManager({
   const [activeTab, setActiveTab] = useState<'folders' | 'files'>('folders')
   const [files, setFiles] = useState<any[]>([])
   const [folders, setFolders] = useState<any[]>([])
-  const [targetFolders, setTargetFolders] = useState<any[]>([]) // Folders in target
-  const [targetFiles, setTargetFiles] = useState<any[]>([]) // Files in target
+  const [targetFolders, setTargetFolders] = useState<any[]>([])
+  const [targetFiles, setTargetFiles] = useState<any[]>([]) 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
-  const [selectedFolders, setSelectedFolders] = useState<string[]>([]) // For migration
+  const [selectedFolders, setSelectedFolders] = useState<string[]>([])
   const [selectedFolder, setSelectedFolder] = useState<string | null | undefined>(undefined)
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const [searchTerm, setSearchTerm] = useState('')
 
-  // Load folders and target folders on mount
   useEffect(() => {
     loadFolders()
     loadTargetFolders()
   }, [])
 
-  // Load files when switching to files tab or when folder selection changes
+
   useEffect(() => {
     if (activeTab === 'files') {
       loadFiles()
@@ -78,7 +77,6 @@ export function FilesManager({
 
   const loadTargetFiles = async () => {
     try {
-      // If selectedFolder is undefined (all folders), don't pass folder filter
       const options = selectedFolder === undefined ? {} : { folder: selectedFolder }
       
       const result = await getFiles(targetUrl, targetToken, options)
@@ -93,7 +91,6 @@ export function FilesManager({
   const loadFiles = async () => {
     setLoading(true)
     try {
-      // If selectedFolder is undefined (all folders), don't pass folder filter
       const options = selectedFolder === undefined ? {} : { folder: selectedFolder }
       
       const result = await getFiles(sourceUrl, sourceToken, options)
@@ -154,7 +151,7 @@ export function FilesManager({
         })
         setSelectedFolders([])
         loadFolders()
-        loadTargetFolders() // Reload target folders to update badges
+        loadTargetFolders() 
       } else {
         onStatusUpdate({
           type: 'error',
@@ -185,32 +182,24 @@ export function FilesManager({
     setProgress({ current: 0, total: selectedFiles.length })
 
     try {
-      // STEP 1: Auto-migrate ALL folders first (to ensure folder structure exists)
       onStatusUpdate({
         type: 'info',
         message: 'Step 1/2: Migrating folder structure...'
       })
 
-      console.log('🗂️ Auto-migrating all folders before files...');
       const foldersResult = await importFolders(
         sourceUrl,
         sourceToken,
         targetUrl,
         targetToken
-        // No selectedFolderIds = migrate ALL folders
       )
 
       if (!foldersResult.success) {
         throw new Error(`Failed to migrate folders: ${foldersResult.error?.message || 'Unknown error'}`);
       }
 
-      console.log('✅ Folders migrated:', foldersResult.message);
-      console.log('📊 Folder mapping:', foldersResult.folderMapping);
-
-      // Reload target folders to show updated badges
       await loadTargetFolders();
 
-      // STEP 2: Now migrate files with folder mapping
       onStatusUpdate({
         type: 'info',
         message: 'Step 2/2: Migrating files...'
@@ -224,7 +213,7 @@ export function FilesManager({
         selectedFiles,
         {
           preserveId: true,
-          folderMapping: foldersResult.folderMapping, // Pass folder ID mapping
+          folderMapping: foldersResult.folderMapping, 
           onProgress: (current, total) => {
             setProgress({ current, total })
           }
@@ -238,7 +227,7 @@ export function FilesManager({
         })
         setSelectedFiles([])
         loadFiles()
-        loadTargetFiles() // Reload target files to update badges
+        loadTargetFiles() 
       } else {
         onStatusUpdate({
           type: 'error',
@@ -288,12 +277,10 @@ export function FilesManager({
     }
   }
 
-  // Helper function to check if folder exists in target
   const folderExistsInTarget = (folderId: string): boolean => {
     return targetFolders.some(f => f.id === folderId)
   }
 
-  // Helper function to check if file exists in target
   const fileExistsInTarget = (fileId: string): boolean => {
     return targetFiles.some(f => f.id === fileId)
   }

@@ -28,7 +28,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
   const [showSettings, setShowSettings] = useState(false)
   const [presetName, setPresetName] = useState('')
 
-  // Get saved presets from localStorage
   const getSavedPresets = (): ConnectionSettings[] => {
     try {
       const saved = localStorage.getItem('directus-migration-presets')
@@ -40,7 +39,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
 
   const [savedPresets, setSavedPresets] = useState<ConnectionSettings[]>(getSavedPresets())
 
-  // Save current settings as a preset
   const saveCurrentAsPreset = () => {
     if (!presetName.trim()) {
       alert('Please enter a preset name')
@@ -70,7 +68,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
     alert(`Preset "${newPreset.name}" saved successfully!`)
   }
 
-  // Load a preset
   const loadPreset = (preset: ConnectionSettings) => {
     onLoadSettings({
       sourceEnvironment: preset.sourceEnvironment,
@@ -83,7 +80,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
     setShowSettings(false)
   }
 
-  // Delete a preset
   const deletePreset = (index: number) => {
     if (confirm('Are you sure you want to delete this preset?')) {
       const updatedPresets = savedPresets.filter((_, i) => i !== index)
@@ -92,7 +88,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
     }
   }
 
-  // Clear all data
   const clearAllData = () => {
     if (confirm('This will clear all saved presets and current settings. Are you sure?')) {
       localStorage.removeItem('directus-migration-presets')
@@ -108,7 +103,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
     }
   }
 
-  // Export settings to JSON file
   const exportSettings = () => {
     const dataToExport = {
       presets: savedPresets,
@@ -127,7 +121,6 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
     URL.revokeObjectURL(url)
   }
 
-  // Import settings from JSON file
   const importSettings = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -149,7 +142,7 @@ export function SettingsManager({ currentSettings, onLoadSettings, onClearAll }:
       }
     }
     reader.readAsText(file)
-    event.target.value = '' // Reset input
+    event.target.value = ''
   }
 
   if (!showSettings) {

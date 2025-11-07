@@ -9,8 +9,8 @@ export class DirectusClient {
   private authType: 'token' | 'login';
 
   constructor(baseUrl: string, token: string, authType: 'token' | 'login' = 'token') {
-    this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
-    this.token = token.replace(/^Bearer\s+/i, ''); // Remove Bearer prefix if present
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.token = token.replace(/^Bearer\s+/i, '');
     this.authType = authType;
   }
 
@@ -43,7 +43,6 @@ export class DirectusClient {
       'Content-Type': 'application/json',
     };
 
-    // Only add Authorization header if we have a token
     if (this.token) {
       defaultHeaders['Authorization'] = `Bearer ${this.token}`;
     }
@@ -70,23 +69,18 @@ export class DirectusClient {
         throw error;
       }
 
-      // Handle empty response body (e.g., 204 No Content or successful operations with no data)
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       
-      // If no content or content-length is 0, return empty object
       if (contentLength === '0' || response.status === 204) {
         return { data: null };
       }
       
-      // If response has no content-type or is not JSON, try to parse as text
       if (!contentType || !contentType.includes('application/json')) {
         const text = await response.text();
-        // If text is empty, return empty object
         if (!text || text.trim() === '') {
           return { data: null };
         }
-        // Try to parse as JSON anyway
         try {
           return JSON.parse(text);
         } catch {
@@ -94,7 +88,6 @@ export class DirectusClient {
         }
       }
 
-      // Normal JSON response
       const text = await response.text();
       if (!text || text.trim() === '') {
         return { data: null };
@@ -102,7 +95,6 @@ export class DirectusClient {
       
       return JSON.parse(text);
     } catch (error: any) {
-      // Re-throw with consistent error structure
       if (!error.response) {
         error.response = {
           status: 0,
@@ -177,7 +169,6 @@ export class DirectusClient {
 
     if (data) {
       if (data instanceof FormData) {
-        // Remove Content-Type header for FormData (let browser set it with boundary)
         const formHeaders: Record<string, string> = {};
         if (this.token) {
           formHeaders['Authorization'] = `Bearer ${this.token}`;
@@ -218,7 +209,6 @@ export class DirectusClient {
     });
   }
 
-  // Utility method to test connection
   async testConnection(): Promise<{ success: boolean; message: string; serverInfo?: any }> {
     try {
       const response = await this.get('/server/info');
@@ -235,17 +225,14 @@ export class DirectusClient {
     }
   }
 
-  // Get base URL for asset requests
   getAssetUrl(assetId: string): string {
     return `${this.baseUrl}/assets/${assetId}`;
   }
 
-  // Get files endpoint URL
   getFilesUrl(fileId?: string): string {
     return fileId ? `${this.baseUrl}/files/${fileId}` : `${this.baseUrl}/files`;
   }
 
-  // Get the current token (useful for API calls that need raw token)
   getToken(): string {
     return this.token;
   }

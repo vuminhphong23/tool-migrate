@@ -68,7 +68,6 @@ export function ConnectionForm({
   const sourceEnvironments = getEnvironments('source')
   const targetEnvironments = getEnvironments('target')
 
-  // Load preset by environment
   const loadPresetByEnvironment = (environment: string, type: 'source' | 'target') => {
     const preset = savedPresets.find((p: any) => 
       type === 'source' ? p.sourceEnvironment === environment : p.targetEnvironment === environment

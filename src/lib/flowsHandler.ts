@@ -1,7 +1,6 @@
 import { DirectusClient } from './DirectusClient';
 import type { ImportLogEntry } from '../types';
 
-// Directus Flow Types
 export interface DirectusFlow {
   id: string;
   name: string;
@@ -12,7 +11,7 @@ export interface DirectusFlow {
   trigger: string | null;
   accountability: 'all' | '$trigger' | '$full' | null;
   options: Record<string, any> | null;
-  operation: string | null; // Root operation ID
+  operation: string | null; 
   date_created: string;
   user_created: string | null;
   date_updated?: string;
@@ -22,14 +21,14 @@ export interface DirectusFlow {
 export interface DirectusOperation {
   id: string;
   name: string | null;
-  key: string; // Operation type
+  key: string; 
   type: string;
   position_x: number;
   position_y: number;
   options: Record<string, any> | null;
-  resolve: string | null; // Next operation on success
-  reject: string | null;  // Next operation on failure
-  flow: string; // Parent flow ID
+  resolve: string | null; 
+  reject: string | null;  
+  flow: string; 
   date_created: string;
   user_created: string | null;
   date_updated?: string;
@@ -95,9 +94,6 @@ export interface FlowImportResult {
   importLog?: ImportLogEntry[];
 }
 
-/**
- * Get all flows from a Directus instance
- */
 export async function getFlowsFromDirectus(
   baseUrl: string,
   token: string
@@ -110,13 +106,11 @@ export async function getFlowsFromDirectus(
   try {
     const client = new DirectusClient(baseUrl, token);
 
-    // Fetch flows
     const flowsResponse = await client.get('/flows', {
       params: { limit: -1 }
     });
     const flows = flowsResponse.data || [];
 
-    // Fetch operations
     const operationsResponse = await client.get('/operations', {
       params: { limit: -1 }
     });
@@ -139,18 +133,13 @@ export async function getFlowsFromDirectus(
   }
 }
 
-/**
- * Build dependency graph for flows and operations
- */
 export function buildFlowDependencyGraph(
   flows: DirectusFlow[],
   operations: DirectusOperation[]
 ): FlowDependencyGraph {
   const dependencies = flows.map(flow => {
-    // Find all operations for this flow
     const flowOperations = operations.filter(op => op.flow === flow.id);
     
-    // Build reference chain
     const references = flowOperations.map(op => ({
       operationId: op.id,
       resolveId: op.resolve || undefined,
@@ -171,9 +160,6 @@ export function buildFlowDependencyGraph(
   };
 }
 
-/**
- * Validate flow migration before execution
- */
 export function validateFlowMigration(
   flows: DirectusFlow[],
   operations: DirectusOperation[],
@@ -183,7 +169,6 @@ export function validateFlowMigration(
   const warnings: string[] = [];
   const missingReferences: FlowValidationResult['missingReferences'] = [];
 
-  // Validate flow-operation relationships
   for (const flow of flows) {
     if (flow.operation) {
       const rootOperation = operations.find(op => op.id === flow.operation);
@@ -198,9 +183,7 @@ export function validateFlowMigration(
     }
   }
 
-  // Validate operation references
   for (const operation of operations) {
-    // Check resolve reference
     if (operation.resolve) {
       const resolveOperation = operations.find(op => op.id === operation.resolve);
       if (!resolveOperation) {
@@ -213,7 +196,6 @@ export function validateFlowMigration(
       }
     }
 
-    // Check reject reference
     if (operation.reject) {
       const rejectOperation = operations.find(op => op.id === operation.reject);
       if (!rejectOperation) {
@@ -226,7 +208,6 @@ export function validateFlowMigration(
       }
     }
 
-    // Check flow reference
     const parentFlow = flows.find(flow => flow.id === operation.flow);
     if (!parentFlow) {
       errors.push(`Operation "${operation.name || operation.id}" references missing flow: ${operation.flow}`);
@@ -238,17 +219,16 @@ export function validateFlowMigration(
     }
   }
 
-  // Detect circular references
   const visited = new Set<string>();
   const recursionStack = new Set<string>();
 
   function detectCircularReference(operationId: string): boolean {
     if (recursionStack.has(operationId)) {
-      return true; // Circular reference detected
+      return true; 
     }
     
     if (visited.has(operationId)) {
-      return false; // Already processed
+      return false;
     }
 
     visited.add(operationId);
@@ -270,18 +250,15 @@ export function validateFlowMigration(
     return false;
   }
 
-  // Check for circular references starting from root operations
   for (const flow of flows) {
     if (flow.operation) {
       detectCircularReference(flow.operation);
     }
   }
 
-  // Validate environment-specific options
   if (options?.transformOptions && options.environmentMapping) {
     for (const operation of operations) {
       if (operation.options) {
-        // Check collection references
         if (operation.options.collection && options.environmentMapping.collections) {
           const targetCollection = options.environmentMapping.collections[operation.options.collection];
           if (!targetCollection) {
@@ -289,7 +266,6 @@ export function validateFlowMigration(
           }
         }
 
-        // Check user references
         if (operation.options.user && options.environmentMapping.users) {
           const targetUser = options.environmentMapping.users[operation.options.user];
           if (!targetUser) {
@@ -308,9 +284,7 @@ export function validateFlowMigration(
   };
 }
 
-/**
- * Transform operation options for target environment
- */
+
 export function transformOperationOptions(
   operation: DirectusOperation,
   environmentMapping: FlowMigrationOptions['environmentMapping'] = {}
@@ -321,7 +295,6 @@ export function transformOperationOptions(
 
   const transformedOptions = { ...operation.options };
 
-  // Transform collection references
   if (transformedOptions.collection && environmentMapping.collections) {
     const mappedCollection = environmentMapping.collections[transformedOptions.collection];
     if (mappedCollection) {
@@ -329,7 +302,6 @@ export function transformOperationOptions(
     }
   }
 
-  // Transform user references
   if (transformedOptions.user && environmentMapping.users) {
     const mappedUser = environmentMapping.users[transformedOptions.user];
     if (mappedUser) {
@@ -337,7 +309,6 @@ export function transformOperationOptions(
     }
   }
 
-  // Transform role references
   if (transformedOptions.role && environmentMapping.roles) {
     const mappedRole = environmentMapping.roles[transformedOptions.role];
     if (mappedRole) {
@@ -345,12 +316,10 @@ export function transformOperationOptions(
     }
   }
 
-  // Transform URL references
   if (environmentMapping.baseUrl) {
     const urlFields = ['url', 'webhook_url', 'endpoint', 'callback_url'];
     for (const field of urlFields) {
       if (transformedOptions[field] && typeof transformedOptions[field] === 'string') {
-        // Replace any localhost or development URLs with target base URL
         transformedOptions[field] = transformedOptions[field].replace(
           /https?:\/\/localhost(:\d+)?/g,
           environmentMapping.baseUrl
@@ -365,9 +334,7 @@ export function transformOperationOptions(
   };
 }
 
-/**
- * Import flows and operations to target Directus instance
- */
+
 export async function importFlowsToDirectus(
   sourceFlows: DirectusFlow[],
   sourceOperations: DirectusOperation[],
@@ -395,7 +362,6 @@ export async function importFlowsToDirectus(
       options
     });
 
-    // Validate before migration
     const validationResult = validateFlowMigration(sourceFlows, sourceOperations, options);
     if (!validationResult.isValid && !options.validateReferences) {
       logStep('validation_failed', { errors: validationResult.errors });
@@ -409,11 +375,9 @@ export async function importFlowsToDirectus(
 
     const client = new DirectusClient(targetUrl, targetToken);
 
-    // Create ID mapping if not preserving IDs
     const idMapping: Record<string, string> = {};
     
     if (!options.preserveIds) {
-      // Generate new UUIDs for all flows and operations
       sourceFlows.forEach(flow => {
         idMapping[flow.id] = crypto.randomUUID();
       });
@@ -422,17 +386,13 @@ export async function importFlowsToDirectus(
       });
     }
 
-    // Import each flow as a complete unit (flow + operations together)
-    // This is the correct approach according to Directus API
     for (const sourceFlow of sourceFlows) {
       try {
         const flowId = options.preserveIds ? sourceFlow.id : idMapping[sourceFlow.id];
         const { date_created, user_created, date_updated, user_updated, ...cleanFlow } = sourceFlow;
         
-        // Get all operations for this flow
         const flowOperations = sourceOperations.filter(op => op.flow === sourceFlow.id);
         
-        // Build operations array WITHOUT resolve/reject first (to avoid circular reference issues)
         const operations = flowOperations.map(sourceOp => {
           const operationId = options.preserveIds ? sourceOp.id : idMapping[sourceOp.id];
           
@@ -442,17 +402,15 @@ export async function importFlowsToDirectus(
             ...cleanOp,
             id: options.preserveIds ? operationId : undefined,
             flow: flowId,
-            resolve: null, // Will be set after all operations are created
-            reject: null   // Will be set after all operations are created
+            resolve: null, 
+            reject: null   
           };
         });
         
-        // Determine root operation
         const rootOperationId = sourceFlow.operation ? 
           (options.preserveIds ? sourceFlow.operation : idMapping[sourceFlow.operation]) : 
           null;
         
-        // Build complete flow with operations
         const flowWithOperations = {
           ...cleanFlow,
           id: options.preserveIds ? flowId : undefined,
@@ -460,18 +418,13 @@ export async function importFlowsToDirectus(
           operations: operations
         };
         
-        // DELETE existing flow first (if exists), then create new one
-        // This approach is safer than PATCH as it avoids reference/dependency issues
         try {
-          // Try to delete existing flow first (will cascade delete operations)
           await client.delete(`/flows/${flowId}`);
           logStep('flow_deleted', { flowId, name: sourceFlow.name });
         } catch (deleteError: any) {
-          // Flow doesn't exist, which is fine - we'll create it
           logStep('flow_not_found', { flowId, name: sourceFlow.name });
         }
         
-        // Now create the flow fresh
         try {
           const importResponse = await client.post('/flows', flowWithOperations);
           logStep('flow_created', { originalId: sourceFlow.id, newId: flowId, name: sourceFlow.name });
@@ -483,7 +436,6 @@ export async function importFlowsToDirectus(
             status: 'success'
           });
           
-          // Mark all operations as imported
           flowOperations.forEach(op => {
             const opId = options.preserveIds ? op.id : idMapping[op.id];
             importedOperations?.push({
@@ -494,7 +446,6 @@ export async function importFlowsToDirectus(
             });
           });
           
-          // Now update resolve/reject references for all operations
           for (const sourceOp of flowOperations) {
             if (sourceOp.resolve || sourceOp.reject) {
               try {
@@ -508,13 +459,11 @@ export async function importFlowsToDirectus(
                 });
                 
               } catch (refError: any) {
-                // Ignore reference update errors
               }
             }
           }
           
         } catch (createError: any) {
-          // If creation still fails, log and continue
           logStep('flow_create_failed', { 
             originalId: sourceFlow.id, 
             flowId, 

@@ -1,7 +1,3 @@
-/**
- * Access Control Handler - Simplified version for roles, policies, and permissions migration
- */
-
 import { DirectusClient } from './DirectusClient'
 
 export interface DirectusRole {
@@ -89,12 +85,11 @@ export async function fetchAccessControlData(
   try {
     const client = new DirectusClient(baseUrl, token);
     
-    // Fetch basic data first
     const [rolesResponse, policiesResponse, permissionsResponse, accessResponse] = await Promise.all([
       client.get('/roles', { params: { limit: -1 } }),
       client.get('/policies', { params: { limit: -1 } }),
       client.get('/permissions', { params: { limit: -1 } }),
-      client.get('/access', { params: { limit: -1 } }).catch(() => ({ data: [] })) // Fetch role-policy relationships
+      client.get('/access', { params: { limit: -1 } }).catch(() => ({ data: [] }))
     ]);
 
     const roles = rolesResponse.data || rolesResponse || [];
@@ -102,7 +97,6 @@ export async function fetchAccessControlData(
     const permissions = permissionsResponse.data || permissionsResponse || [];
     const accessRelations = accessResponse.data || accessResponse || [];
 
-    // Map access relationships to roles (add policies array to each role)
     const rolesWithPolicies = roles.map((role: any) => {
       const rolePolicies = accessRelations
         .filter((access: any) => access.role === role.id)
@@ -128,23 +122,17 @@ export async function fetchAccessControlData(
   }
 }
 
-/**
- * Analyze access control data
- */
 export function analyzeAccessControlData(
   roles: DirectusRole[],
   policies: DirectusPolicy[],
   permissions: DirectusPermission[]
 ): AccessControlAnalysis {
-  // Analyze roles
   const adminRoles = roles.filter(role => role.admin_access).map(role => role.id);
   const customRoles = roles.filter(role => !role.admin_access).map(role => role.id);
 
-  // Analyze policies
   const adminPolicies = policies.filter(policy => policy.admin_access).map(policy => policy.id);
   const customPolicies = policies.filter(policy => !policy.admin_access).map(policy => policy.id);
 
-  // Analyze permissions by collection
   const byCollection: Record<string, number> = {};
   permissions.forEach(permission => {
     byCollection[permission.collection] = (byCollection[permission.collection] || 0) + 1;
@@ -192,7 +180,6 @@ export async function importAccessControlData(
     const importedPolicies: any[] = [];
     const importedPermissions: any[] = [];
 
-    // Load existing data from target for comparison
     const [targetRolesRes, targetPoliciesRes, targetPermissionsRes] = await Promise.all([
       client.get('/roles').catch(() => ({ data: [] })),
       client.get('/policies').catch(() => ({ data: [] })),
@@ -203,28 +190,23 @@ export async function importAccessControlData(
     const existingPolicies = targetPoliciesRes.data || [];
     const existingPermissions = targetPermissionsRes.data || [];
 
-    // Step 1: Import Roles
     for (const role of sourceRoles) {
       try {
         if (options?.roles?.skipAdminRoles && role.admin_access) {
           continue;
         }
 
-        const { users, policies, ...cleanRole } = role; // Remove users and policies arrays - they're managed via directus_access junction table
-        
-        // Check if role already exists in target
+        const { users, policies, ...cleanRole } = role; 
         const existingRole = existingRoles.find((r: any) => r.id === role.id);
         
         let response;
         let importedId;
         
         if (existingRole && options?.roles?.preserveIds) {
-          // Role exists and we want to preserve IDs -> PATCH
-          const { id, ...roleToUpdate } = cleanRole; // Remove ID from body for PATCH
+          const { id, ...roleToUpdate } = cleanRole; 
           response = await client.patch(`/roles/${role.id}`, roleToUpdate);
-          importedId = role.id; // Keep original ID
+          importedId = role.id; 
         } else {
-          // Role doesn't exist or we don't preserve IDs -> POST
           const roleToImport = {
             ...cleanRole,
             id: options?.roles?.preserveIds ? role.id : undefined
@@ -250,31 +232,27 @@ export async function importAccessControlData(
       }
     }
 
-    // Step 2: Import Policies
     for (const policy of sourcePolicies) {
       try {
         if (options?.policies?.skipAdminPolicies && policy.admin_access) {
           continue;
         }
 
-        const { users, roles, permissions, ...cleanPolicy } = policy; // Remove users, roles, and permissions arrays - they're managed via junction tables
+        const { users, roles, permissions, ...cleanPolicy } = policy;
         
-        // Check if policy already exists in target
         const existingPolicy = existingPolicies.find((p: any) => p.id === policy.id);
         
         let response;
         let importedId;
         
         if (existingPolicy && options?.policies?.preserveIds) {
-          // Policy exists and we want to preserve IDs -> PATCH
           const { id, ...policyToUpdate } = {
             ...cleanPolicy,
             ip_access: policy.ip_access || null
           };
           response = await client.patch(`/policies/${policy.id}`, policyToUpdate);
-          importedId = policy.id; // Keep original ID
+          importedId = policy.id; 
         } else {
-          // Policy doesn't exist or we don't preserve IDs -> POST
           const policyToImport = {
             ...cleanPolicy,
             id: options?.policies?.preserveIds ? policy.id : undefined,
@@ -301,7 +279,6 @@ export async function importAccessControlData(
       }
     }
 
-    // Step 3: Import Permissions (simplified - create new IDs)
     let successfulPermissions = 0;
     
     for (const permission of sourcePermissions) {
@@ -310,7 +287,6 @@ export async function importAccessControlData(
           continue;
         }
 
-        // Verify that the policy exists in target (either pre-existing or just imported)
         if (permission.policy) {
           const policyExists = existingPolicies.some((p: any) => p.id === permission.policy) ||
                               importedPolicies.some(p => p.originalId === permission.policy && p.status === 'success');
@@ -328,7 +304,6 @@ export async function importAccessControlData(
           }
         }
 
-        // Check if permission already exists in target (by collection + action + policy)
         const existingPermission = existingPermissions.find((p: any) => 
           p.collection === permission.collection &&
           p.action === permission.action &&
@@ -339,8 +314,6 @@ export async function importAccessControlData(
         let importedId;
         
         if (existingPermission) {
-          // Permission exists -> PATCH
-          // Clean permission data - remove id and any system fields
           const cleanPermission = {
             policy: permission.policy,
             collection: permission.collection,
@@ -352,10 +325,8 @@ export async function importAccessControlData(
           };
           
           response = await client.patch(`/permissions/${existingPermission.id}`, cleanPermission);
-          importedId = existingPermission.id; // Keep existing ID
+          importedId = existingPermission.id; 
         } else {
-          // Permission doesn't exist -> POST
-          // Clean permission data - only include allowed fields
           const permissionToImport = {
             policy: permission.policy,
             collection: permission.collection,
@@ -391,34 +362,28 @@ export async function importAccessControlData(
       }
     }
 
-    // Step 4: Import Role-Policy Relationships (directus_access)
     const importedAccess: any[] = [];
     let successfulAccess = 0;
     
-    // Fetch existing access relationships from target
     const targetAccessRes = await client.get('/access').catch(() => ({ data: [] }));
     const existingAccess = targetAccessRes.data || [];
     
-    // Build access relationships from source roles that have policies
     for (const role of sourceRoles) {
-      // Skip if role doesn't have policies array or it's empty
       if (!role.policies || !Array.isArray(role.policies) || role.policies.length === 0) {
         continue;
       }
       
       for (const policyId of role.policies) {
         try {
-          // Check if this role-policy relationship already exists
           const existingRelation = existingAccess.find((a: any) => 
             a.role === role.id && a.policy === policyId
           );
           
           if (existingRelation) {
-            successfulAccess++; // Count as successful since it already exists
+            successfulAccess++; 
             continue;
           }
           
-          // Verify that the policy was successfully imported or already exists
           const policyImported = importedPolicies.find(p => p.originalId === policyId && p.status === 'success');
           const policyExistsInTarget = existingPolicies.some((p: any) => p.id === policyId);
           
@@ -426,7 +391,6 @@ export async function importAccessControlData(
             continue;
           }
           
-          // Create new access relationship
           const accessData = {
             role: role.id,
             policy: policyId,

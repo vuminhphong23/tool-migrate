@@ -107,10 +107,8 @@ export async function validateDirectusToken(
       };
     }
 
-    // Create DirectusClient for validation
     const client = new DirectusClient(selectedDomain, adminToken);
 
-    // Test connection by trying to read users (requires admin access)
     logStep("token_validation_start", {});
     try {
       const testResult = await client.get("/users", { params: { limit: 1 } });
@@ -189,7 +187,6 @@ export async function testCollectionAccess(
       };
     } catch (sdkError: any) {
 
-      // Try to check if collection exists
       try {
         const collectionsResult = await sourceDirectus.request(
           (readItems as any)("directus_collections", { limit: -1 }),
@@ -262,7 +259,6 @@ export async function testMultipleCollections(
     const result = await testCollectionAccess(selectedDomain, adminToken, collection);
     results[collection] = result;
 
-    // Add a small delay between tests
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
@@ -274,9 +270,6 @@ export async function testMultipleCollections(
   };
 }
 
-/**
- * Imports data from another Directus instance
- */
 export async function importFromDirectus(
   sourceUrl: string,
   sourceToken: string,
@@ -287,8 +280,8 @@ export async function importFromDirectus(
     limit?: number;
     titleFilter?: string;
     onProgress?: (current: number, total: number) => void;
-    selectedFields?: string[]; // Only migrate selected fields
-    forceUpdate?: boolean; // Force update even if item exists
+    selectedFields?: string[]; 
+    forceUpdate?: boolean; 
   }
 ): Promise<ImportResult> {
   const importLog: ImportLogEntry[] = [];
@@ -311,7 +304,6 @@ export async function importFromDirectus(
       hasTargetToken: !!targetToken,
     });
 
-    // Validate tokens first
     const sourceValidation = await validateDirectusToken(sourceUrl, sourceToken);
     if (!sourceValidation.success) {
       logStep("source_token_validation_failed", sourceValidation.error);
@@ -339,7 +331,6 @@ export async function importFromDirectus(
       targetInfo: targetValidation.serverInfo 
     });
 
-    // Create clients
     const normalizedSourceToken = sourceToken.replace(/^Bearer\s+/i, "");
     const sourceDirectus = createDirectus(sourceUrl)
       .with(staticToken(normalizedSourceToken))
@@ -347,7 +338,6 @@ export async function importFromDirectus(
 
     const targetClient = new DirectusClient(targetUrl, targetToken);
 
-    // Ensure target folder exists (name: collectionName) and get its ID
     const targetFolderName = collectionName;
     let targetFolderId: string | null = null;
     try {
@@ -372,17 +362,11 @@ export async function importFromDirectus(
       logStep("target_folder_error", { name: targetFolderName, error: folderErr.message });
     }
 
-    // Fetch data from source server
     logStep("fetch_data_start", { collectionName, titleFilter: options?.titleFilter });
     const fetchLimit = typeof options?.limit === "number" && options.limit > 0 ? options.limit : -1;
     
-    // Build query parameters
     const queryParams: any = { limit: fetchLimit };
     
-    // Note: titleFilter is intentionally NOT applied here to avoid filtering issues
-    // with collections that don't have a 'translations' field structure.
-    // The filter was causing empty results for collections like 'searchsg_performance_metrics'
-    // If filtering is needed, it should be implemented per-collection based on schema
     if (options?.titleFilter && options.titleFilter.trim()) {
       logStep("title_filter_skipped", { 
         filter: options.titleFilter.trim(), 
@@ -394,7 +378,6 @@ export async function importFromDirectus(
       (readItems as any)(collectionName, queryParams),
     );
 
-    // Ensure sourceItems is always an array
     const sourceItems = Array.isArray(response) ? response : [];
 
     logStep("fetch_data_success", {
@@ -412,7 +395,6 @@ export async function importFromDirectus(
       };
     }
 
-    // Import items to target server
     logStep("import_items_start", {
       itemCount: sourceItems.length,
       collectionName,
@@ -431,27 +413,22 @@ export async function importFromDirectus(
     for (let i = 0; i < itemsToImport.length; i++) {
       const item = itemsToImport[i];
       
-      // Report progress
       if (options?.onProgress) {
         options.onProgress(i + 1, totalItems);
       }
       
       try {
-        // Remove system fields
         const { id, date_created, date_updated, user_created, user_updated, ...cleanItem } = item;
 
-        // Prepare item to import
         let itemToImport: Record<string, any> = {};
         
         if (options?.selectedFields && options.selectedFields.length > 0) {
-          // Only migrate selected fields - user has full control
           options.selectedFields.forEach(field => {
             if (field in cleanItem) {
               itemToImport[field] = cleanItem[field];
             }
           });
         } else {
-          // Migrate all fields (user didn't select specific fields)
           itemToImport = { ...cleanItem };
         }
 
@@ -459,7 +436,6 @@ export async function importFromDirectus(
         let action: "created" | "updated" = "created";
         const sourceIdStr = String(id);
 
-        // Step 1: Check if item already exists in target
         let itemExists = false;
         try {
           const checkResponse = await targetClient.get(`/items/${collectionName}/${sourceIdStr}`);
@@ -470,13 +446,10 @@ export async function importFromDirectus(
             exists: itemExists 
           });
         } catch (checkErr: any) {
-          // Item doesn't exist (404) or other error
           itemExists = false;
         }
 
-        // Step 2: Update or Create based on existence
         if (itemExists) {
-          // Item exists - UPDATE it
           try {
             logStep("item_update_start", { sourceId: sourceIdStr, collectionName });
             importResponse = await targetClient.patch(
@@ -485,7 +458,6 @@ export async function importFromDirectus(
             );
             action = "updated";
           } catch (updateErr: any) {
-            // Update failed - log detailed error
             logStep("item_update_failed", { 
               sourceId: sourceIdStr, 
               collectionName,
@@ -496,14 +468,12 @@ export async function importFromDirectus(
             throw updateErr;
           }
         } else {
-          // Item doesn't exist - CREATE it
           try {
             logStep("item_create_with_id_start", { sourceId: sourceIdStr, collectionName });
             const payloadWithId = { id: sourceIdStr, ...itemToImport };
             importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
             action = "created";
           } catch (createErr: any) {
-            // Create failed - log detailed error
             logStep("item_create_failed", { 
               sourceId: sourceIdStr, 
               collectionName,
@@ -512,7 +482,6 @@ export async function importFromDirectus(
               details: createErr?.response?.data
             });
             
-            // Only log 403 errors to console (permission issues)
             if (createErr?.response?.status === 403) {
               console.error(`\n❌ 403 FORBIDDEN - Cannot create ${collectionName} item ${sourceIdStr}`);
               console.error(`📋 Full error response:`, JSON.stringify(createErr?.response?.data, null, 2));
@@ -622,8 +591,6 @@ export async function previewCollectionItems(
       .with(staticToken(normalizedToken))
       .with(rest());
 
-    // Use provided limit or default to 100
-    // limit: -1 means fetch all items (no limit)
     const limit = options?.limit !== undefined ? options.limit : 100;
     const offset = options?.offset || 0;
 
@@ -635,7 +602,6 @@ export async function previewCollectionItems(
       }),
     );
 
-    // Handle both array response and object with data property
     const items = Array.isArray(response) ? response : (response?.data || []);
     const total = response?.meta?.total_count || items.length;
 
@@ -656,9 +622,6 @@ export async function previewCollectionItems(
   }
 }
 
-/**
- * Import only selected items by their IDs
- */
 export async function importSelectedItems(
   sourceUrl: string,
   sourceToken: string,
@@ -667,7 +630,7 @@ export async function importSelectedItems(
   collectionName: string,
   selectedIds: (string | number)[],
   options?: {
-    selectedFields?: string[];  // Only migrate selected fields
+    selectedFields?: string[];  
     onProgress?: (current: number, total: number) => void;
   }
 ): Promise<ImportResult> {
@@ -690,7 +653,6 @@ export async function importSelectedItems(
       selectedCount: selectedIds.length,
     });
 
-    // Create clients
     const normalizedSourceToken = sourceToken.replace(/^Bearer\s+/i, "");
     const sourceDirectus = createDirectus(sourceUrl)
       .with(staticToken(normalizedSourceToken))
@@ -698,7 +660,6 @@ export async function importSelectedItems(
 
     const targetClient = new DirectusClient(targetUrl, targetToken);
 
-    // Fetch selected items from source
     const sourceItems: any[] = [];
     for (const id of selectedIds) {
       try {
@@ -722,7 +683,6 @@ export async function importSelectedItems(
       fetched: sourceItems.length,
     });
 
-    // Import items
     const importedItems: ImportedItem[] = [];
     let successCount = 0;
     let errorCount = 0;
@@ -737,18 +697,15 @@ export async function importSelectedItems(
       try {
         const { id, date_created, date_updated, user_created, user_updated, ...cleanItem } = item;
 
-        // Prepare item to import
         let itemToImport: Record<string, any> = {};
         
         if (options?.selectedFields && options.selectedFields.length > 0) {
-          // Only migrate selected fields - user has full control
           options.selectedFields.forEach(field => {
             if (field in cleanItem) {
               itemToImport[field] = cleanItem[field];
             }
           });
         } else {
-          // Migrate all fields (user didn't select specific fields)
           itemToImport = { ...cleanItem };
         }
 
@@ -756,7 +713,6 @@ export async function importSelectedItems(
         let action: "created" | "updated" = "created";
         const sourceIdStr = String(id);
 
-        // Check if exists
         let itemExists = false;
         try {
           const checkResponse = await targetClient.get(`/items/${collectionName}/${sourceIdStr}`);
@@ -765,7 +721,6 @@ export async function importSelectedItems(
           itemExists = false;
         }
 
-        // Update or Create
         if (itemExists) {
           importResponse = await targetClient.patch(
             `/items/${collectionName}/${sourceIdStr}`,
@@ -773,7 +728,6 @@ export async function importSelectedItems(
           );
           action = "updated";
         } else {
-          // Create with explicit ID only - no fallback
           const payloadWithId = { id: sourceIdStr, ...itemToImport };
           importResponse = await targetClient.post(`/items/${collectionName}`, payloadWithId);
           action = "created";
@@ -849,12 +803,6 @@ export async function getAllCollections(
     const response = await client.get("/collections");
     const allCollections = response.data || [];
 
-    console.log('📦 getAllCollections - All collections from API:', allCollections.length);
-    console.log('  System collections:', allCollections.filter((c: any) => c.collection?.startsWith('directus_')).length);
-    console.log('  Custom collections:', allCollections.filter((c: any) => !c.collection?.startsWith('directus_')).length);
-
-    // Return ALL collections - no filtering
-    // User can toggle system collections visibility in UI
     return {
       success: true,
       collections: allCollections,

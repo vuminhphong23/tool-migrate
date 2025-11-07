@@ -36,14 +36,13 @@ export function FlowsManager({
     preserveIds: true,
     validateReferences: true,
     transformOptions: false,
-    conflictResolution: 'overwrite' // Default to overwrite for updates
+    conflictResolution: 'overwrite'
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationResults, setMigrationResults] = useState<FlowImportResult | null>(null);
   const [validationResult, setValidationResult] = useState<{ isValid: boolean; errors: string[]; warnings: string[] } | null>(null);
 
-  // Load flows from source and target
   useEffect(() => {
     if (isVisible && sourceUrl && sourceToken) {
       loadSourceFlows();
@@ -61,7 +60,6 @@ export function FlowsManager({
         setSourceFlows(result.flows || []);
         setSourceOperations(result.operations || []);
         
-        // Set all flows as collapsed by default on first load
         if (!initialCollapseSet && result.flows && result.flows.length > 0) {
           const allFlowIds = result.flows.map(f => f.id);
           setCollapsedFlows(new Set(allFlowIds));
@@ -97,7 +95,6 @@ export function FlowsManager({
         setTargetOperations(result.operations || []);
       }
     } catch (error: any) {
-      // Silent fail - target flows are optional for status display
     } finally {
       setLoadingTarget(false);
     }
@@ -112,7 +109,6 @@ export function FlowsManager({
   };
 
   const handleSelectAll = () => {
-    // Get filtered flows based on current filter
     const filteredFlows = sourceFlows.filter(flow => {
       const existsInTarget = targetFlows.some(tf => tf.id === flow.id);
       if (statusFilter === 'new') return !existsInTarget;
@@ -124,10 +120,8 @@ export function FlowsManager({
     const allFilteredSelected = filteredFlowIds.every(id => selectedFlows.includes(id));
 
     if (allFilteredSelected && filteredFlowIds.length > 0) {
-      // Deselect all filtered flows
       setSelectedFlows(prev => prev.filter(id => !filteredFlowIds.includes(id)));
     } else {
-      // Select all filtered flows
       setSelectedFlows(prev => [...new Set([...prev, ...filteredFlowIds])]);
     }
   };
@@ -206,7 +200,6 @@ export function FlowsManager({
           message: result.message
         });
         
-        // Clear selection and refresh target flows after successful migration
         setSelectedFlows([]);
         await loadTargetFlows();
       } else {
@@ -932,7 +925,6 @@ export function FlowsManager({
                     {loading ? 'Loading operations...' : 'No operations found'}
                   </div>
                 ) : (() => {
-                  // Filter operations based on status filter
                   const filteredOps = sourceOperations.filter(op => {
                     const existsInTarget = targetOperations.some(to => to.id === op.id);
                     if (statusFilter === 'new') return !existsInTarget;
@@ -948,7 +940,6 @@ export function FlowsManager({
                     );
                   }
 
-                  // Group operations by flow
                   const opsByFlow: Record<string, DirectusOperation[]> = {};
                   filteredOps.forEach(op => {
                     if (!opsByFlow[op.flow]) {
@@ -957,7 +948,6 @@ export function FlowsManager({
                     opsByFlow[op.flow].push(op);
                   });
 
-                  // Sort flows by name
                   const sortedFlowIds = Object.keys(opsByFlow).sort((a, b) => {
                     const flowA = sourceFlows.find(f => f.id === a);
                     const flowB = sourceFlows.find(f => f.id === b);

@@ -76,7 +76,6 @@ export function DebugTool({ sourceUrl, sourceToken, sourceEmail, sourcePassword,
   }
 
   const testPolicyOperations = () => {
-    // Test creating a simple policy
     const testPolicy = {
       id: 'test-policy-' + Date.now(),
       name: 'Test Policy',

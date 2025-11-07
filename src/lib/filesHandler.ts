@@ -3,16 +3,11 @@ import type { ImportLogEntry } from "../types";
 
 interface FileItem {
   id: string;
-  // storage: string;
   filename_disk: string;
   filename_download: string;
   title?: string;
   type: string;
   folder?: string | null;
-  // uploaded_by?: string;
-  // uploaded_on?: string;
-  // modified_by?: string;
-  // modified_on?: string;
   charset?: string;
   filesize: number;
   width?: number;
@@ -67,7 +62,6 @@ export async function getFiles(
       fields: '*',
     };
     
-    // Filter by folder if specified
     if (options?.folder !== undefined) {
       params.filter = {
         folder: options.folder === null ? { _null: true } : { _eq: options.folder }
@@ -125,35 +119,28 @@ export async function getFolders(
   }
 }
 
-/**
- * Import folders from source to target (preserving hierarchy)
- */
 export async function importFolders(
   sourceUrl: string,
   sourceToken: string,
   targetUrl: string,
   targetToken: string,
-  selectedFolderIds?: string[] // Optional: if provided, only migrate these folders
+  selectedFolderIds?: string[] 
 ): Promise<{
   success: boolean;
   message: string;
-  folderMapping?: Map<string, string>; // source ID -> target ID
+  folderMapping?: Map<string, string>;
   error?: any;
 }> {
   try {
     const sourceClient = new DirectusClient(sourceUrl, sourceToken);
     const targetClient = new DirectusClient(targetUrl, targetToken);
 
-    // Get all folders from source
     const sourceFoldersResponse = await sourceClient.get('/folders', { params: { limit: -1 } });
     let sourceFolders = sourceFoldersResponse.data || [];
 
-    // Filter folders if specific ones are selected
     if (selectedFolderIds && selectedFolderIds.length > 0) {
-      // Include selected folders and their parent folders (to maintain hierarchy)
       const foldersToMigrate = new Set<string>(selectedFolderIds);
       
-      // Add parent folders to maintain hierarchy
       selectedFolderIds.forEach(folderId => {
         const folder = sourceFolders.find((f: any) => f.id === folderId);
         if (folder) {
@@ -177,11 +164,9 @@ export async function importFolders(
       };
     }
 
-    // Get existing folders from target
     const targetFoldersResponse = await targetClient.get('/folders', { params: { limit: -1 } });
     const targetFolders = targetFoldersResponse.data || [];
     
-    // Create a map of existing folders by ID for fast lookup
     const existingFoldersById = new Map<string, any>();
     targetFolders.forEach((folder: any) => {
       existingFoldersById.set(folder.id, folder);
@@ -192,40 +177,31 @@ export async function importFolders(
     let skippedCount = 0;
     let errorCount = 0;
 
-    // Sort folders by hierarchy (root folders first)
     const sortedFolders = [...sourceFolders].sort((a, b) => {
       if (!a.parent && b.parent) return -1;
       if (a.parent && !b.parent) return 1;
       return 0;
     });
 
-    // Import folders in order
     for (const sourceFolder of sortedFolders) {
       try {
-        // Check if folder already exists by ID
         const existingFolder = existingFoldersById.get(sourceFolder.id);
         
         if (existingFolder) {
-          // Folder with same ID already exists in target
-          console.log(`[Folder ${sourceFolder.id}] Already exists with name "${existingFolder.name}", skipping...`);
           folderMapping.set(sourceFolder.id, existingFolder.id);
           skippedCount++;
           continue;
         }
 
-        // Folder doesn't exist, create it with original ID
         const folderData: any = {
-          id: sourceFolder.id, // Preserve original ID
+          id: sourceFolder.id,
           name: sourceFolder.name,
         };
 
-        // Keep parent folder ID (should already exist from previous iteration)
         if (sourceFolder.parent) {
           folderData.parent = sourceFolder.parent;
         }
 
-        console.log(`[Folder ${sourceFolder.id}] Creating with name "${sourceFolder.name}"...`);
-        
         const createResponse = await targetClient.post('/folders', folderData);
         const newFolderId = createResponse.data?.id;
         
@@ -233,7 +209,6 @@ export async function importFolders(
           folderMapping.set(sourceFolder.id, newFolderId);
           existingFoldersById.set(newFolderId, createResponse.data);
           createdCount++;
-          console.log(`[Folder ${sourceFolder.id}] ✓ Created successfully`);
         }
 
       } catch (error: any) {
@@ -244,7 +219,6 @@ export async function importFolders(
           status: error.response?.status,
           details: error.response?.data
         });
-        // Continue with other folders
       }
     }
 
@@ -275,11 +249,6 @@ export async function importFolders(
   }
 }
 
-/**
- * Import file from source to target using Directus /files/import endpoint
- * According to Directus API docs: POST /files/import with {url, data}
- * Target server downloads file directly from source URL (server-to-server)
- */
 export async function importFile(
   sourceUrl: string,
   sourceToken: string,
@@ -310,7 +279,6 @@ export async function importFile(
     const sourceClient = new DirectusClient(sourceUrl, sourceToken);
     const targetClient = new DirectusClient(targetUrl, targetToken);
 
-    // Step 1: Get file metadata from source
     logStep('fetch_file_metadata', { fileId });
     const fileMetaResponse = await sourceClient.get(`/files/${fileId}`);
     const fileMeta: FileItem = fileMetaResponse.data;
@@ -319,19 +287,10 @@ export async function importFile(
       throw new Error(`File ${fileId} not found on source`);
     }
 
-    console.log(`[File ${fileId}] Fetched metadata:`, {
-      filename: fileMeta.filename_download,
-      type: fileMeta.type,
-      size: fileMeta.filesize,
-      folder: fileMeta.folder
-    });
-
-    // Step 2: Check if file already exists in target by ID (since we preserve IDs)
     let fileExists = false;
     let existingFile: any = undefined;
     
     try {
-      // Check by ID first
       const checkResponse = await targetClient.get(`/files/${fileId}`);
       
       if (checkResponse?.data) {
@@ -345,20 +304,16 @@ export async function importFile(
         existingFilename: existingFile?.filename_download 
       });
     } catch (err: any) {
-      // If 404, file doesn't exist (which is fine)
       if (err.response?.status === 404) {
         fileExists = false;
         logStep('file_exists_check', { fileId, exists: false });
       } else {
-        // Other errors, log but continue
         fileExists = false;
         logStep('file_exists_check_error', { error: err.message, status: err.response?.status });
       }
     }
 
-    // If file exists, skip it
     if (fileExists) {
-      console.log(`[File ${fileId}] Already exists in target with filename "${existingFile.filename_download}", skipping...`);
       logStep('file_skipped', { fileId, reason: 'already_exists', existingFilename: existingFile.filename_download });
       
       return {
@@ -368,27 +323,20 @@ export async function importFile(
       };
     }
 
-    // Step 3: Import file using /files/import endpoint (per Directus API docs)
-    // Construct source asset URL (without access_token, will use Authorization header)
     const sourceAssetUrl = `${sourceUrl}/assets/${fileId}`;
     
-    console.log(`[File ${fileId}] Importing from URL: ${sourceAssetUrl}`);
     logStep('import_start', { fileId, filename: fileMeta.filename_download });
     
-    // Prepare import request body according to API spec
     const importPayload: any = {
       url: sourceAssetUrl,
     };
     
-    // Build complete metadata from source file
     const metadata: any = {};
     
-    // Preserve ID from source (if enabled)
     if (options?.preserveId && fileMeta.id) {
       metadata.id = fileMeta.id;
     }
     
-    // Basic metadata
     if (fileMeta.title) {
       metadata.title = fileMeta.title;
     }
@@ -396,11 +344,6 @@ export async function importFile(
     if (fileMeta.description) {
       metadata.description = fileMeta.description;
     }
-    
-    // Storage and file info
-    // if (fileMeta.storage) {
-    //   metadata.storage = fileMeta.storage;
-    // }
     
     if (fileMeta.filename_disk) {
       metadata.filename_disk = fileMeta.filename_disk;
@@ -418,17 +361,14 @@ export async function importFile(
       metadata.charset = fileMeta.charset;
     }
     
-    // Folder - keep original from source
     if (fileMeta.folder !== undefined) {
       metadata.folder = fileMeta.folder;
     }
     
-    // Tags
     if (fileMeta.tags && fileMeta.tags.length > 0) {
       metadata.tags = fileMeta.tags;
     }
     
-    // Media dimensions
     if (fileMeta.width !== undefined) {
       metadata.width = fileMeta.width;
     }
@@ -441,7 +381,6 @@ export async function importFile(
       metadata.duration = fileMeta.duration;
     }
     
-    // Location and embed
     if (fileMeta.location) {
       metadata.location = fileMeta.location;
     }
@@ -450,45 +389,18 @@ export async function importFile(
       metadata.embed = fileMeta.embed;
     }
     
-    // Custom metadata
     if (fileMeta.metadata && Object.keys(fileMeta.metadata).length > 0) {
       metadata.metadata = fileMeta.metadata;
     }
     
-    // User tracking (keep original user IDs if exist)
-    // if (fileMeta.uploaded_by) {
-    //   metadata.uploaded_by = fileMeta.uploaded_by;
-    // }
-    
-    // if (fileMeta.modified_by) {
-    //   metadata.modified_by = fileMeta.modified_by;
-    // }
-    
-    // // Timestamps (keep original timestamps)
-    // if (fileMeta.uploaded_on) {
-    //   metadata.uploaded_on = fileMeta.uploaded_on;
-    // }
-    
-    // if (fileMeta.modified_on) {
-    //   metadata.modified_on = fileMeta.modified_on;
-    // }
-    
-    // Filesize (should be preserved)
     if (fileMeta.filesize !== undefined) {
       metadata.filesize = fileMeta.filesize;
     }
     
-    // Add metadata to import payload
     if (Object.keys(metadata).length > 0) {
       importPayload.data = metadata;
     }
 
-    console.log(`[File ${fileId}] Request payload:`, {
-      url: sourceAssetUrl,
-      data: metadata
-    });
-
-    // POST /files/import - Target downloads from source
     const importResponse = await targetClient.post('/files/import', importPayload);
 
     const importedFileId = importResponse.data?.id;
@@ -497,7 +409,6 @@ export async function importFile(
       throw new Error('Import succeeded but no file ID returned');
     }
     
-    console.log(`[File ${fileId}] ✓ Import successful! New ID: ${importedFileId}`);
     logStep('import_success', { 
       sourceId: fileId, 
       targetId: importedFileId,
@@ -532,10 +443,6 @@ export async function importFile(
   }
 }
 
-/**
- * Import multiple files from source to target
- * Process: For each file -> Download from source -> Upload to target
- */
 export async function importFiles(
   sourceUrl: string,
   sourceToken: string,
@@ -543,7 +450,7 @@ export async function importFiles(
   targetToken: string,
   fileIds: string[],
   options?: {
-    folderMapping?: Map<string, string>; // Map source folder IDs to target folder IDs
+    folderMapping?: Map<string, string>; 
     preserveId?: boolean;
     onProgress?: (current: number, total: number) => void;
   }
@@ -586,26 +493,21 @@ export async function importFiles(
         options.onProgress(i + 1, fileIds.length);
       }
 
-      // Get file metadata to determine folder
       let targetFolderId: string | null | undefined = undefined;
       try {
         const fileMetaResponse = await sourceClient.get(`/files/${fileId}`);
         const fileMeta = fileMetaResponse.data;
         
-        // Map source folder ID to target folder ID
         if (fileMeta?.folder && options?.folderMapping) {
           targetFolderId = options.folderMapping.get(fileMeta.folder) || null;
         } else if (fileMeta?.folder === null) {
           targetFolderId = null;
         }
       } catch (err) {
-        // Continue without folder mapping if metadata fetch fails
         console.warn(`[File ${fileId}] Could not fetch metadata for folder mapping:`, err);
       }
 
       try {
-        console.log(`\n=== Processing file ${i + 1}/${fileIds.length}: ${fileId} ===`);
-        
         const result = await importFile(
           sourceUrl,
           sourceToken,
@@ -621,7 +523,6 @@ export async function importFiles(
         if (result.success) {
           if (result.action === 'skipped') {
             skippedCount++;
-            console.log(`[File ${fileId}] Skipped (already exists)`);
             importedFiles.push({
               originalId: fileId,
               newId: result.fileId,
@@ -630,7 +531,6 @@ export async function importFiles(
             });
           } else {
             successCount++;
-            console.log(`[File ${fileId}] Success! Action: ${result.action}`);
             importedFiles.push({
               originalId: fileId,
               newId: result.fileId,
@@ -660,7 +560,6 @@ export async function importFiles(
         });
       }
 
-      // Add small delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 

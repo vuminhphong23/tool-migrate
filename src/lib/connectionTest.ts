@@ -10,10 +10,6 @@ export interface TestConnectionResult {
   };
 }
 
-/**
- * Test connection to a Directus server by calling /server/info endpoint
- * Supports both Bearer token and username/password authentication
- */
 export async function testDirectusConnection(
   url: string,
   token?: string,
@@ -30,12 +26,9 @@ export async function testDirectusConnection(
 
     let client: DirectusClient;
 
-    // Determine authentication method
     if (token) {
-      // Use Bearer token authentication
       client = new DirectusClient(url, token);
     } else if (email && password) {
-      // Use username/password authentication
       try {
         client = await DirectusClient.createWithLogin(url, email, password);
       } catch (loginError: any) {
@@ -51,7 +44,6 @@ export async function testDirectusConnection(
       };
     }
     
-    // Call /server/info endpoint
     const response = await client.get('/server/info');
     
     if (response && response.data) {
@@ -69,7 +61,6 @@ export async function testDirectusConnection(
     }
   } catch (error: any) {
     
-    // Handle different types of errors
     if (error.response) {
       const status = error.response.status;
       const statusText = error.response.statusText;
@@ -115,9 +106,6 @@ export async function testDirectusConnection(
   }
 }
 
-/**
- * Save a preset configuration to localStorage
- */
 export function savePresetConfiguration(config: {
   name: string;
   environment: string;
@@ -129,10 +117,8 @@ export function savePresetConfiguration(config: {
   type: 'source' | 'target';
 }) {
   try {
-    // Get existing presets
     const existingPresets = JSON.parse(localStorage.getItem('directus-migration-presets') || '[]');
     
-    // Create new preset
     const newPreset = {
       name: config.name,
       [`${config.type}Environment`]: config.environment,
@@ -141,7 +127,6 @@ export function savePresetConfiguration(config: {
       [`${config.type}AuthType`]: config.authType || 'token',
       [`${config.type}Email`]: config.email || '',
       [`${config.type}Password`]: config.password || '',
-      // Fill other fields with empty values if this is a partial save
       ...(config.type === 'source' ? {
         targetEnvironment: '',
         targetUrl: '',
@@ -160,21 +145,17 @@ export function savePresetConfiguration(config: {
       createdAt: new Date().toISOString()
     };
     
-    // Check if preset with same name exists
     const existingIndex = existingPresets.findIndex((p: any) => p.name === config.name);
     
     if (existingIndex >= 0) {
-      // Update existing preset
       existingPresets[existingIndex] = {
         ...existingPresets[existingIndex],
         ...newPreset
       };
     } else {
-      // Add new preset
       existingPresets.push(newPreset);
     }
     
-    // Save back to localStorage
     localStorage.setItem('directus-migration-presets', JSON.stringify(existingPresets));
     
     return {
