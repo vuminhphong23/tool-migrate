@@ -59,7 +59,7 @@ export function DocumentationTab({ isVisible, onClose }: DocumentationTabProps) 
           paddingBottom: '1rem',
           flexWrap: 'wrap'
         }}>
-          {['server', 'collections', 'roles', 'policies', 'permissions', 'access', 'flows', 'operations', 'schema'].map(section => (
+          {['server', 'auth', 'collections', 'items', 'files', 'folders', 'users', 'roles', 'policies', 'permissions', 'access', 'flows', 'operations', 'schema'].map(section => (
             <button
               key={section}
               onClick={() => setActiveSection(section)}
@@ -136,6 +136,348 @@ export function DocumentationTab({ isVisible, onClose }: DocumentationTabProps) 
                   <li><strong>Connection testing</strong> - Verify server is reachable</li>
                   <li><strong>Version checking</strong> - Ensure compatibility</li>
                   <li><strong>No authentication required</strong> - Public endpoint</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'auth' && (
+            <div>
+              <h3>🔑 Authentication API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>🔐 Login</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /auth/login</strong> - Authenticate and get access token
+                  <br />
+                  <em>Body:</em> email, password
+                  <br />
+                  <em>Returns:</em> access_token, refresh_token, expires
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Request/Response Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// Request
+POST /auth/login
+{
+  "email": "admin@example.com",
+  "password": "password123"
+}
+
+// Response
+{
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "refresh_token_string",
+    "expires": 900000
+  }
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Usage:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Token generation</strong> - Get access token for API calls</li>
+                  <li><strong>Alternative to static tokens</strong> - Use email/password instead of Bearer token</li>
+                  <li><strong>Token in headers</strong> - Use: Authorization: Bearer {'<access_token>'}</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'items' && (
+            <div>
+              <h3>📄 Items API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /items/{'{collection}'}</strong> - List items in collection
+                  <br />
+                  <strong>GET /items/{'{collection}'}/{'{id}'}</strong> - Get single item
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, meta, sort, filter, search, page
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /items/{'{collection}'}</strong> - Create new item
+                  <br />
+                  <strong>PATCH /items/{'{collection}'}/{'{id}'}</strong> - Update item
+                  <br />
+                  <strong>DELETE /items/{'{collection}'}/{'{id}'}</strong> - Delete item
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Example Usage</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// Get items with pagination
+GET /items/articles?limit=100&offset=0&meta=total_count
+
+// Get single item with relations
+GET /items/articles/123?fields=*,author.*,category.*
+
+// Create item
+POST /items/articles
+{
+  "title": "My Article",
+  "content": "Article content...",
+  "status": "published"
+}
+
+// Update item (check if exists first)
+GET /items/articles/123  // Check existence
+PATCH /items/articles/123
+{
+  "title": "Updated Title"
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#fef2f2', padding: '1rem', borderRadius: '6px' }}>
+                <strong>⚠️ Migration Strategy:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Check before write</strong> - GET first to see if item exists</li>
+                  <li><strong>Preserve IDs</strong> - Use same ID from source when possible</li>
+                  <li><strong>Handle relations</strong> - Migrate in dependency order</li>
+                  <li><strong>System collections blocked</strong> - Cannot use /items/directus_* (use direct endpoints)</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'files' && (
+            <div>
+              <h3>📁 Files API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /files</strong> - List all files
+                  <br />
+                  <strong>GET /files/{'{id}'}</strong> - Get file metadata
+                  <br />
+                  <strong>GET /assets/{'{id}'}</strong> - Download file content
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, filter (e.g., folder._eq)
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /files</strong> - Upload new file (multipart/form-data)
+                  <br />
+                  <strong>POST /files/import</strong> - Import file from URL
+                  <br />
+                  <strong>PATCH /files/{'{id}'}</strong> - Update file metadata
+                  <br />
+                  <strong>DELETE /files/{'{id}'}</strong> - Delete file
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 File Import Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// Import from URL (recommended for migration)
+POST /files/import
+{
+  "url": "https://source.directus.app/assets/file-uuid",
+  "data": {
+    "id": "file-uuid",           // Preserve original ID
+    "title": "Image.jpg",
+    "filename_download": "image.jpg",
+    "filename_disk": "uuid.jpg",
+    "type": "image/jpeg",
+    "filesize": 123456,
+    "folder": "folder-uuid",     // Target folder UUID
+    "width": 1920,
+    "height": 1080,
+    "tags": ["tag1", "tag2"]
+  }
+}
+
+// Upload file (multipart)
+POST /files
+Content-Type: multipart/form-data
+- file: (binary data)
+- title: "My File"
+- folder: "folder-uuid"`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Best Practices:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Use /files/import</strong> - Directus downloads from source URL</li>
+                  <li><strong>Preserve metadata</strong> - Keep original filename, title, dimensions</li>
+                  <li><strong>Migrate folders first</strong> - Ensure folder structure exists</li>
+                  <li><strong>Skip duplicates</strong> - Check if file ID exists before importing</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'folders' && (
+            <div>
+              <h3>📂 Folders API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /folders</strong> - List all folders
+                  <br />
+                  <strong>GET /folders/{'{id}'}</strong> - Get single folder
+                  <br />
+                  <em>Parameters:</em> limit, offset, filter
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>✏️ Write Operations</h4>
+                <div style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>POST /folders</strong> - Create new folder
+                  <br />
+                  <strong>PATCH /folders/{'{id}'}</strong> - Update folder
+                  <br />
+                  <strong>DELETE /folders/{'{id}'}</strong> - Delete folder
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Folder Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// Create folder
+POST /folders
+{
+  "id": "folder-uuid",           // Optional: preserve ID
+  "name": "My Folder",
+  "parent": "parent-folder-uuid" // null for root level
+}
+
+// Response
+{
+  "data": {
+    "id": "folder-uuid",
+    "name": "My Folder",
+    "parent": "parent-folder-uuid"
+  }
+}
+
+// Folder hierarchy
+Root (null)
+  ├── Images (uuid-1)
+  │   ├── Products (uuid-2)
+  │   └── Blog (uuid-3)
+  └── Documents (uuid-4)`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#fef3c7', padding: '1rem', borderRadius: '6px' }}>
+                <strong>⚠️ Migration Order:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Sort by depth</strong> - Create parent folders before children</li>
+                  <li><strong>Preserve IDs</strong> - Keep original folder UUIDs for file references</li>
+                  <li><strong>Check existence</strong> - Skip if folder already exists in target</li>
+                  <li><strong>Root first</strong> - Create folders with parent=null before nested ones</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'users' && (
+            <div>
+              <h3>👤 Users API</h3>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📖 Read Operations</h4>
+                <div style={{ backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                  <strong>GET /users</strong> - List all users
+                  <br />
+                  <strong>GET /users/me</strong> - Get current user info
+                  <br />
+                  <strong>GET /users/{'{id}'}</strong> - Get single user
+                  <br />
+                  <em>Parameters:</em> fields, limit, offset, filter
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '2rem' }}>
+                <h4>📝 Response Structure</h4>
+                <pre style={{ 
+                  backgroundColor: '#1f2937', 
+                  color: '#f9fafb', 
+                  padding: '1rem', 
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  fontSize: '0.75rem'
+                }}>
+{`// GET /users/me
+{
+  "data": {
+    "id": "user-uuid",
+    "first_name": "Admin",
+    "last_name": "User",
+    "email": "admin@example.com",
+    "role": "admin-role-uuid",
+    "status": "active",
+    "token": null
+  }
+}
+
+// GET /users?limit=1 (connection test)
+{
+  "data": [
+    {
+      "id": "user-uuid",
+      "email": "user@example.com",
+      "role": "role-uuid"
+    }
+  ]
+}`}
+                </pre>
+              </div>
+
+              <div style={{ backgroundColor: '#ecfdf5', padding: '1rem', borderRadius: '6px' }}>
+                <strong>✅ Usage in Migration Tool:</strong>
+                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
+                  <li><strong>Connection testing</strong> - GET /users?limit=1 to verify auth</li>
+                  <li><strong>User info</strong> - GET /users/me to show current user</li>
+                  <li><strong>Not for migration</strong> - Users are NOT migrated (security reasons)</li>
                 </ul>
               </div>
             </div>
