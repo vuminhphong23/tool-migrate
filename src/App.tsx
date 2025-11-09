@@ -309,8 +309,6 @@ function App() {
           />
         </div>
       )}
-
-      <StatusDisplay status={operationStatus} onDismiss={() => setOperationStatus(null)} />
     </div>
   )
 }

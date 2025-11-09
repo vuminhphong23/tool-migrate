@@ -437,7 +437,7 @@ export function FilesManager({
               </div>
 
               {/* Search */}
-              <div style={{ flex: '1', minWidth: '200px' }}>
+              <div style={{ flex: '1', minWidth: '200px', marginRight: '1rem' }}>
                 <label style={{ fontSize: '0.875rem', fontWeight: '500', color: '#374151', display: 'block', marginBottom: '0.25rem' }}>
                   Search
                 </label>
@@ -774,7 +774,7 @@ export function FilesManager({
                   boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)'
                 }}
               >
-                {importing ? '⏳ Migrating...' : `🚀 Migrate ${selectedFolders.length} Folders`}
+                {importing ? 'Migrating...' : `Migrate ${selectedFolders.length} Folders`}
               </button>
             ) : (
               <button

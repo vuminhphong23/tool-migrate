@@ -799,12 +799,11 @@ export function CollectionList({
   }
 
   const handleImportSelected = async (selectedFields?: string[]) => {
-    if (selectedItemIds.length === 0) return
-
     const collectionName = currentPreviewCollection
     const loadingKey = `import_selected_${collectionName}`
     setLoading(loadingKey, true)
-    setShowItemSelector(false)
+    // Don't close modal immediately - keep it open to show progress
+    // setShowItemSelector(false)
     onStatusUpdate(null)
     setImportProgress(prev => ({ ...prev, [collectionName]: { current: 0, total: selectedItemIds.length } }))
 
@@ -2119,6 +2118,95 @@ export function CollectionList({
           <h3 style={{ margin: 0 }}>
             📦 Custom Collections ({collections.filter(c => !c.collection.startsWith('directus_')).length})
           </h3>
+        </div>
+        
+        {/* Overall Migration Progress */}
+        {(() => {
+          const totalCurrent = Object.values(importProgress).reduce((sum, p) => sum + p.current, 0);
+          const totalItems = Object.values(importProgress).reduce((sum, p) => sum + p.total, 0);
+          const activeCollections = Object.keys(importProgress).length;
+          
+          if (activeCollections === 0) return null;
+          
+          return (
+            <div style={{
+              padding: '1.5rem',
+              backgroundColor: '#f0f9ff',
+              borderRadius: '8px',
+              border: '2px solid #3b82f6',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#1e40af' }}>
+                  🚀 Overall Migration Progress
+                </div>
+                <div style={{ fontSize: '0.875rem', color: '#1e40af', fontWeight: '500' }}>
+                  {activeCollections} collection{activeCollections > 1 ? 's' : ''} migrating
+                </div>
+              </div>
+              
+              <div style={{ marginBottom: '0.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '0.875rem', color: '#1e40af', fontWeight: '500' }}>
+                    Total Items: {totalCurrent} / {totalItems}
+                  </span>
+                  <span style={{ fontSize: '0.875rem', color: '#1e40af', fontWeight: '600' }}>
+                    {totalItems > 0 ? Math.round((totalCurrent / totalItems) * 100) : 0}%
+                  </span>
+                </div>
+                
+                <div style={{
+                  width: '100%',
+                  height: '12px',
+                  backgroundColor: '#dbeafe',
+                  borderRadius: '6px',
+                  overflow: 'hidden',
+                  boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.1)'
+                }}>
+                  <div style={{
+                    width: `${totalItems > 0 ? (totalCurrent / totalItems) * 100 : 0}%`,
+                    height: '100%',
+                    backgroundColor: '#3b82f6',
+                    transition: 'width 0.3s ease',
+                    boxShadow: '0 0 10px rgba(59, 130, 246, 0.5)'
+                  }}></div>
+                </div>
+              </div>
+              
+              <div style={{ fontSize: '0.75rem', color: '#60a5fa', marginTop: '0.5rem' }}>
+                {Object.entries(importProgress).map(([collection, progress]) => (
+                  <div key={collection} style={{ marginBottom: '0.25rem' }}>
+                    • {collection}: {progress.current}/{progress.total}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Migration Note for Relational Fields */}
+        <div style={{
+          padding: '1rem',
+          backgroundColor: '#fffbeb',
+          borderRadius: '6px',
+          border: '1px solid #fde68a',
+          marginBottom: '1rem'
+        }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: '600', color: '#92400e', marginBottom: '0.5rem' }}>
+            💡 Best Practice for Relational Fields:
+          </div>
+          <div style={{ fontSize: '0.8rem', color: '#92400e', lineHeight: '1.5' }}>
+            When migrating data with relational fields (M2O, O2M, M2M):
+            <ol style={{ margin: '0.5rem 0 0 1.5rem', padding: 0 }}>
+              <li>First migration: Exclude relational fields to migrate base data</li>
+              <li>After all related data is migrated: Run a second migration (update mode) to populate relational fields</li>
+            </ol>
+            This prevents foreign key constraint errors and ensures data integrity.
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div></div>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
             {/* Search Collection */}
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -3112,6 +3200,8 @@ export function CollectionList({
           hasMore={false}
           loading={loadingPreview}
           relations={sourceRelations}
+          importing={loading[`import_selected_${currentPreviewCollection}`]}
+          importProgress={importProgress[currentPreviewCollection]}
         />
       )}
 

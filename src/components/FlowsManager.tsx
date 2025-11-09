@@ -42,6 +42,7 @@ export function FlowsManager({
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationResults, setMigrationResults] = useState<FlowImportResult | null>(null);
   const [validationResult, setValidationResult] = useState<{ isValid: boolean; errors: string[]; warnings: string[] } | null>(null);
+  const [flowSearch, setFlowSearch] = useState('');
 
   useEffect(() => {
     if (isVisible && sourceUrl && sourceToken) {
@@ -412,6 +413,25 @@ export function FlowsManager({
           </div>
         )}
 
+        {/* Search Bar */}
+        {sourceFlows.length > 0 && (
+          <div style={{ marginBottom: '1rem', marginRight: '1rem' }}>
+            <input
+              type="text"
+              placeholder="Search flows (name, trigger, description)..."
+              value={flowSearch}
+              onChange={(e) => setFlowSearch(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '4px',
+                fontSize: '0.875rem'
+              }}
+            />
+          </div>
+        )}
+
         {/* Source Flows List */}
         <div style={{ marginBottom: '1.5rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
@@ -491,6 +511,18 @@ export function FlowsManager({
               </div>
             ) : (() => {
               const filteredFlows = sourceFlows.filter(flow => {
+                // Apply search filter
+                if (flowSearch) {
+                  const searchLower = flowSearch.toLowerCase();
+                  const matchesSearch = (
+                    flow.name.toLowerCase().includes(searchLower) ||
+                    (flow.trigger && flow.trigger.toLowerCase().includes(searchLower)) ||
+                    (flow.description && flow.description.toLowerCase().includes(searchLower))
+                  );
+                  if (!matchesSearch) return false;
+                }
+                
+                // Apply status filter
                 const existsInTarget = targetFlows.some(tf => tf.id === flow.id);
                 if (statusFilter === 'new') return !existsInTarget;
                 if (statusFilter === 'existing') return existsInTarget;
@@ -612,19 +644,6 @@ export function FlowsManager({
           >
             {loading ? 'Migrating...' : `Migrate ${selectedFlows.length} Flow${selectedFlows.length !== 1 ? 's' : ''}`}
           </button>
-        </div>
-
-        {/* Info */}
-        <div style={{
-          marginTop: '1rem',
-          padding: '0.75rem',
-          backgroundColor: '#fffbeb',
-          borderRadius: '6px',
-          fontSize: '0.875rem',
-          color: '#92400e'
-        }}>
-          <strong>⚠️ Important:</strong> Flow migration is experimental. Always backup your target instance before proceeding.
-          Flows with complex operations or environment-specific configurations may require manual adjustment.
         </div>
 
         {/* Migration Progress Status */}

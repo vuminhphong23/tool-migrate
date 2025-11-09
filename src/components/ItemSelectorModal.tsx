@@ -11,7 +11,9 @@ interface ItemSelectorModalProps {
   onLoadMore: () => void
   hasMore: boolean
   loading: boolean
-  relations?: any[] 
+  relations?: any[]
+  importing?: boolean
+  importProgress?: { current: number; total: number } | null
 }
 
 export function ItemSelectorModal({
@@ -25,7 +27,9 @@ export function ItemSelectorModal({
   onLoadMore,
   hasMore,
   loading,
-  relations = []
+  relations = [],
+  importing = false,
+  importProgress = null
 }: ItemSelectorModalProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectAll, setSelectAll] = useState(false)
@@ -204,16 +208,17 @@ export function ItemSelectorModal({
           <button
             onClick={onClose}
             style={{
-              backgroundColor: 'transparent',
+              backgroundColor: '#6b7280',
+              color: 'white',
+              padding: '0.5rem 1rem',
               border: 'none',
-              fontSize: '1.5rem',
+              borderRadius: '6px',
               cursor: 'pointer',
-              color: '#6b7280',
-              padding: '0.5rem',
-              lineHeight: 1
+              fontSize: '0.875rem',
+              fontWeight: '500'
             }}
           >
-            ✕
+            Close
           </button>
         </div>
 
@@ -547,6 +552,47 @@ export function ItemSelectorModal({
           )}
         </div>
 
+        {/* Import Progress Bar */}
+        {importing && importProgress && (
+          <div style={{
+            padding: '1.5rem',
+            backgroundColor: '#f0f9ff',
+            borderTop: '2px solid #3b82f6'
+          }}>
+            <div style={{ marginBottom: '0.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.875rem', color: '#1e40af', fontWeight: '600' }}>
+                  🚀 Migrating Items...
+                </span>
+                <span style={{ fontSize: '0.875rem', color: '#1e40af', fontWeight: '600' }}>
+                  {importProgress.current} / {importProgress.total} ({Math.round((importProgress.current / importProgress.total) * 100)}%)
+                </span>
+              </div>
+              
+              <div style={{
+                width: '100%',
+                height: '12px',
+                backgroundColor: '#dbeafe',
+                borderRadius: '6px',
+                overflow: 'hidden',
+                boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.1)'
+              }}>
+                <div style={{
+                  width: `${(importProgress.current / importProgress.total) * 100}%`,
+                  height: '100%',
+                  backgroundColor: '#3b82f6',
+                  transition: 'width 0.3s ease',
+                  boxShadow: '0 0 10px rgba(59, 130, 246, 0.5)'
+                }}></div>
+              </div>
+            </div>
+            
+            <div style={{ fontSize: '0.75rem', color: '#60a5fa', textAlign: 'center' }}>
+              Please wait... Do not close this window
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div style={{
           padding: '1rem 1.5rem',
@@ -562,38 +608,40 @@ export function ItemSelectorModal({
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button
               onClick={onClose}
+              disabled={importing}
               style={{
                 backgroundColor: '#f3f4f6',
                 color: '#374151',
                 padding: '0.625rem 1.25rem',
                 border: 'none',
                 borderRadius: '6px',
-                cursor: 'pointer',
+                cursor: importing ? 'not-allowed' : 'pointer',
                 fontSize: '0.875rem',
-                fontWeight: '500'
+                fontWeight: '500',
+                opacity: importing ? 0.5 : 1
               }}
             >
-              Cancel
+              {importing ? 'Importing...' : 'Cancel'}
             </button>
             <button
               onClick={() => {
                 onImport(selectedFields.length > 0 ? selectedFields : undefined);
               }}
-              disabled={selectedIds.length === 0}
+              disabled={selectedIds.length === 0 || importing}
               style={{
-                backgroundColor: selectedIds.length === 0 ? '#9ca3af' : '#3b82f6',
+                backgroundColor: (selectedIds.length === 0 || importing) ? '#9ca3af' : '#3b82f6',
                 color: 'white',
                 padding: '0.625rem 1.25rem',
                 border: 'none',
                 borderRadius: '6px',
-                cursor: selectedIds.length === 0 ? 'not-allowed' : 'pointer',
+                cursor: (selectedIds.length === 0 || importing) ? 'not-allowed' : 'pointer',
                 fontSize: '0.875rem',
                 fontWeight: '500',
-                opacity: selectedIds.length === 0 ? 0.6 : 1
+                opacity: (selectedIds.length === 0 || importing) ? 0.6 : 1
               }}
             >
-              Import Selected ({selectedIds.length})
-              {selectedFields.length > 0 && ` - ${selectedFields.length} fields`}
+              {importing ? 'Importing...' : `Import Selected (${selectedIds.length})`}
+              {!importing && selectedFields.length > 0 && ` - ${selectedFields.length} fields`}
             </button>
           </div>
         </div>

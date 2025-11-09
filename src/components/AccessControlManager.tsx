@@ -637,8 +637,17 @@ export function AccessControlManager({
                   </div>
                   
                   {/* Warning Text */}
-                  <div style={{ fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic' }}>
-                    ⚠️ Permissions are organized by policies and will be migrated automatically when you select policies
+                  <div style={{ fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic', marginBottom: '0.5rem' }}>
+                    💡 Permissions are organized by policies and will be migrated automatically when you select policies
+                  </div>
+                  
+                  {/* Additional Notes */}
+                  <div style={{ fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic', marginBottom: '0.5rem' }}>
+                    💡 Selecting roles will automatically select their related policies and permissions
+                  </div>
+                  
+                  <div style={{ fontSize: '0.75rem', color: '#f59e0b', fontStyle: 'italic' }}>
+                    ⚠️ For existing items with no changes, deselect them to save migration time
                   </div>
                 </div>
 
@@ -828,7 +837,7 @@ export function AccessControlManager({
                   </div>
 
                   {/* Search */}
-                  <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ marginBottom: '1rem', marginRight: '1rem' }}>
                     <input
                       type="text"
                       placeholder="Search permissions (collection, action, policy)..."
