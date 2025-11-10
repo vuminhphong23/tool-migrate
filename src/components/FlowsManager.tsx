@@ -606,26 +606,6 @@ export function FlowsManager({
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
           <button
-            onClick={validateMigration}
-            style={{
-              backgroundColor: selectedFlows.length === 0 ? '#9ca3af' : '#f59e0b',
-              color: 'white',
-              padding: '0.75rem 1.5rem',
-              fontWeight: '500',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: loading || selectedFlows.length === 0 ? 'not-allowed' : 'pointer',
-              opacity: loading || selectedFlows.length === 0 ? 0.6 : 1,
-              transition: 'all 0.2s ease',
-              fontSize: '0.875rem'
-            }}
-            disabled={loading || selectedFlows.length === 0}
-            title={selectedFlows.length === 0 ? 'Please select at least one flow' : 'Validate selected flows before migration'}
-          >
-            Validate Migration
-          </button>
-          
-          <button
             onClick={executeMigration}
             style={{
               backgroundColor: loading || selectedFlows.length === 0 ? '#9ca3af' : '#10b981',

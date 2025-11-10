@@ -37,8 +37,6 @@ export function CollectionList({
   const [showFilesManager, setShowFilesManager] = useState(false)
   const [showDocumentation, setShowDocumentation] = useState(false)
   const [selectedCollections, setSelectedCollections] = useState<string[]>([])
-  const [validationResults, setValidationResults] = useState<Record<string, { isValid: boolean; errors: string[]; warnings: string[] }>>({})
-  const [isValidating, setIsValidating] = useState(false)
   const [showSystemCollections, setShowSystemCollections] = useState(false)
   const [systemCollectionsAcknowledged, setSystemCollectionsAcknowledged] = useState(false)
   const [targetCollections, setTargetCollections] = useState<Collection[]>([])
@@ -2043,73 +2041,6 @@ export function CollectionList({
         >
           {loading.refresh_collections ? 'Loading...' : 'Refresh Data'}
         </button>
-
-        <button
-          onClick={async () => {
-            if (selectedCollections.length === 0) {
-              onStatusUpdate({ type: 'error', message: 'Please select at least one collection to validate' });
-              return;
-            }
-            
-            setIsValidating(true);
-            const results: Record<string, { isValid: boolean; errors: string[]; warnings: string[] }> = {};
-            
-            try {
-              for (const collectionName of selectedCollections) {
-                const collection = collections.find(c => c.collection === collectionName);
-                if (!collection) continue;
-                
-                const errors: string[] = [];
-                const warnings: string[] = [];
-                
-                if (collection.collection.startsWith('directus_')) {
-                  warnings.push('System collection - migration may affect core functionality');
-                }
-                
-                if (collection.meta?.singleton) {
-                  warnings.push('Singleton collection - only one record expected');
-                }
-                
-                
-                results[collectionName] = {
-                  isValid: errors.length === 0,
-                  errors,
-                  warnings
-                };
-              }
-              
-              setValidationResults(results);
-              
-              const totalErrors = Object.values(results).reduce((sum, r) => sum + r.errors.length, 0);
-              const totalWarnings = Object.values(results).reduce((sum, r) => sum + r.warnings.length, 0);
-              
-              if (totalErrors > 0) {
-                onStatusUpdate({ type: 'error', message: `Validation failed: ${totalErrors} errors found` });
-              } else if (totalWarnings > 0) {
-                onStatusUpdate({ type: 'warning', message: `Validation passed with ${totalWarnings} warnings` });
-              } else {
-                onStatusUpdate({ type: 'success', message: 'All collections validated successfully' });
-              }
-            } catch (error: any) {
-              onStatusUpdate({ type: 'error', message: `Validation failed: ${error.message}` });
-            } finally {
-              setIsValidating(false);
-            }
-          }}
-          style={{
-            backgroundColor: '#f59e0b',
-            color: 'white',
-            padding: '0.75rem 1.5rem',
-            fontWeight: '500',
-            borderRadius: '6px',
-            border: 'none',
-            cursor: 'pointer',
-            minWidth: '160px'
-          }}
-          disabled={Object.values(loading).some(Boolean) || selectedCollections.length === 0}
-        >
-          {isValidating ? 'Validating...' : 'Validate Migration'}
-        </button>
       </div>
 
       {/* Custom Collections List */}
@@ -2375,17 +2306,14 @@ export function CollectionList({
             
             return paginatedCollections.map((collection) => {
             const isSelected = selectedCollections.includes(collection.collection);
-            const validationResult = validationResults[collection.collection];
-            const hasValidationErrors = validationResult && !validationResult.isValid;
-            const hasValidationWarnings = validationResult && validationResult.warnings.length > 0;
             const collectionStatus = getCollectionStatus(collection);
             
             return (
               <div key={collection.collection} className="collection-item" style={{
                 padding: '1rem',
-                border: `1px solid ${hasValidationErrors ? '#fecaca' : isSelected ? '#93c5fd' : '#e5e7eb'}`,
+                border: `1px solid ${isSelected ? '#93c5fd' : '#e5e7eb'}`,
                 borderRadius: '8px',
-                backgroundColor: hasValidationErrors ? '#fef2f2' : isSelected ? '#f0f9ff' : 'white'
+                backgroundColor: isSelected ? '#f0f9ff' : 'white'
               }}>
                 <div style={{
                   display: 'flex',
@@ -2438,20 +2366,6 @@ export function CollectionList({
                           {collectionStatus === 'existing' ? 'Existing' : collectionStatus === 'new' ? 'New' : 'Unknown'}
                         </span>
                         
-                        {validationResult && (
-                          <span style={{
-                            padding: '0.25rem 0.5rem',
-                            borderRadius: '4px',
-                            fontSize: '0.75rem',
-                            fontWeight: '500',
-                            backgroundColor: hasValidationErrors ? '#fee2e2' : hasValidationWarnings ? '#fef3c7' : '#dcfce7',
-                            color: hasValidationErrors ? '#dc2626' : hasValidationWarnings ? '#d97706' : '#16a34a',
-                            border: `1px solid ${hasValidationErrors ? '#fecaca' : hasValidationWarnings ? '#fde68a' : '#bbf7d0'}`,
-                            lineHeight: '1'
-                          }}>
-                            {hasValidationErrors ? '❌ Error' : hasValidationWarnings ? '⚠️ Warning' : '✅ Valid'}
-                          </span>
-                        )}
                         
                         {collection.meta?.singleton && (
                           <span style={{
@@ -2478,49 +2392,6 @@ export function CollectionList({
                       }}>
                         {collection.meta.note && (
                           <div>📝 {collection.meta.note}</div>
-                        )}
-                      </div>
-                    )}
-                    
-                    
-                    {validationResult && (
-                      <div style={{ marginTop: '0.5rem' }}>
-                        {validationResult.errors.length > 0 && (
-                          <div style={{
-                            padding: '0.5rem',
-                            backgroundColor: '#fef2f2',
-                            borderRadius: '4px',
-                            border: '1px solid #fecaca',
-                            marginBottom: '0.5rem'
-                          }}>
-                            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#dc2626', marginBottom: '0.25rem' }}>
-                              🚨 Validation Errors:
-                            </div>
-                            {validationResult.errors.map((error, index) => (
-                              <div key={index} style={{ fontSize: '0.7rem', color: '#dc2626' }}>
-                                • {error}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        
-                        {validationResult.warnings.length > 0 && (
-                          <div style={{
-                            padding: '0.5rem',
-                            backgroundColor: '#fffbeb',
-                            borderRadius: '4px',
-                            border: '1px solid #fde68a',
-                            marginBottom: '0.5rem'
-                          }}>
-                            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#d97706', marginBottom: '0.25rem' }}>
-                              ⚠️ Warnings:
-                            </div>
-                            {validationResult.warnings.map((warning, index) => (
-                              <div key={index} style={{ fontSize: '0.7rem', color: '#d97706' }}>
-                                • {warning}
-                              </div>
-                            ))}
-                          </div>
                         )}
                       </div>
                     )}
@@ -2567,14 +2438,14 @@ export function CollectionList({
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
                         <button
                           onClick={() => handlePreviewItems(collection.collection)}
-                          disabled={loading[`import_${collection.collection}`] || hasValidationErrors || collectionStatus === 'new'}
+                          disabled={loading[`import_${collection.collection}`] || collectionStatus === 'new'}
                           style={{
-                            backgroundColor: hasValidationErrors || collectionStatus === 'new' ? '#9ca3af' : '#3b82f6',
+                            backgroundColor: collectionStatus === 'new' ? '#9ca3af' : '#3b82f6',
                             color: 'white',
                             padding: '0.5rem 1rem',
                             borderRadius: '6px',
                             border: 'none',
-                            cursor: hasValidationErrors || collectionStatus === 'new' ? 'not-allowed' : 'pointer',
+                            cursor: collectionStatus === 'new' ? 'not-allowed' : 'pointer',
                             fontWeight: '500',
                             fontSize: '0.875rem'
                           }}
@@ -2876,17 +2747,14 @@ export function CollectionList({
               <div style={{ display: 'grid', gap: '1rem' }}>
                 {collections.filter(c => c.collection.startsWith('directus_')).map((collection) => {
                   const isSelected = selectedCollections.includes(collection.collection);
-                  const validationResult = validationResults[collection.collection];
-                  const hasValidationErrors = validationResult && !validationResult.isValid;
-                  const hasValidationWarnings = validationResult && validationResult.warnings.length > 0;
                   const collectionStatus = getCollectionStatus(collection);
                   
                   return (
                     <div key={collection.collection} style={{
                       padding: '1rem',
-                      border: `2px solid ${hasValidationErrors ? '#dc2626' : isSelected ? '#dc2626' : '#fecaca'}`,
+                      border: `2px solid ${isSelected ? '#dc2626' : '#fecaca'}`,
                       borderRadius: '8px',
-                      backgroundColor: hasValidationErrors ? '#fef2f2' : isSelected ? '#fee2e2' : '#fefefe'
+                      backgroundColor: isSelected ? '#fee2e2' : '#fefefe'
                     }}>
                       <div style={{
                         display: 'flex',
@@ -2938,20 +2806,6 @@ export function CollectionList({
                               }}>
                                 {collectionStatus === 'existing' ? 'Existing' : collectionStatus === 'new' ? 'New' : 'Unknown'}
                               </span>
-                              
-                              {validationResult && (
-                                <span style={{
-                                  padding: '2px 6px',
-                                  borderRadius: '3px',
-                                  fontSize: '0.7rem',
-                                  fontWeight: '500',
-                                  backgroundColor: hasValidationErrors ? '#fee2e2' : hasValidationWarnings ? '#fef3c7' : '#dcfce7',
-                                  color: hasValidationErrors ? '#dc2626' : hasValidationWarnings ? '#d97706' : '#16a34a',
-                                  border: `1px solid ${hasValidationErrors ? '#fecaca' : hasValidationWarnings ? '#fde68a' : '#bbf7d0'}`
-                                }}>
-                                  {hasValidationErrors ? '❌ Error' : hasValidationWarnings ? '⚠️ Warning' : '✅ Valid'}
-                                </span>
-                              )}
                             </div>
                           </div>
                           
@@ -2964,49 +2818,6 @@ export function CollectionList({
                             }}>
                               {collection.meta.note && (
                                 <div>📝 {collection.meta.note}</div>
-                              )}
-                            </div>
-                          )}
-                          
-                          
-                          {validationResult && (
-                            <div style={{ marginTop: '0.5rem' }}>
-                              {validationResult.errors.length > 0 && (
-                                <div style={{
-                                  padding: '0.5rem',
-                                  backgroundColor: '#fef2f2',
-                                  borderRadius: '4px',
-                                  border: '1px solid #fecaca',
-                                  marginBottom: '0.5rem'
-                                }}>
-                                  <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#dc2626', marginBottom: '0.25rem' }}>
-                                    🚨 Validation Errors:
-                                  </div>
-                                  {validationResult.errors.map((error, index) => (
-                                    <div key={index} style={{ fontSize: '0.7rem', color: '#dc2626' }}>
-                                      • {error}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                              
-                              {validationResult.warnings.length > 0 && (
-                                <div style={{
-                                  padding: '0.5rem',
-                                  backgroundColor: '#fffbeb',
-                                  borderRadius: '4px',
-                                  border: '1px solid #fde68a',
-                                  marginBottom: '0.5rem'
-                                }}>
-                                  <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#d97706', marginBottom: '0.25rem' }}>
-                                    ⚠️ Warnings:
-                                  </div>
-                                  {validationResult.warnings.map((warning, index) => (
-                                    <div key={index} style={{ fontSize: '0.7rem', color: '#d97706' }}>
-                                      • {warning}
-                                    </div>
-                                  ))}
-                                </div>
                               )}
                             </div>
                           )}
@@ -3052,22 +2863,20 @@ export function CollectionList({
                           ) : (
                             <button
                               onClick={() => handleImport(collection.collection)}
-                              disabled={loading[`import_${collection.collection}`] || hasValidationErrors || !systemCollectionsAcknowledged}
+                              disabled={loading[`import_${collection.collection}`] || !systemCollectionsAcknowledged}
                               style={{ 
-                                backgroundColor: (!systemCollectionsAcknowledged || hasValidationErrors) ? '#9ca3af' : '#dc2626',
+                                backgroundColor: !systemCollectionsAcknowledged ? '#9ca3af' : '#dc2626',
                                 color: 'white',
                                 padding: '0.5rem 1rem',
                                 borderRadius: '6px',
                                 border: 'none',
                                 fontWeight: '500',
-                                cursor: (loading[`import_${collection.collection}`] || hasValidationErrors || !systemCollectionsAcknowledged) ? 'not-allowed' : 'pointer',
-                                opacity: (loading[`import_${collection.collection}`] || hasValidationErrors || !systemCollectionsAcknowledged) ? 0.7 : 1
+                                cursor: (loading[`import_${collection.collection}`] || !systemCollectionsAcknowledged) ? 'not-allowed' : 'pointer',
+                                opacity: (loading[`import_${collection.collection}`] || !systemCollectionsAcknowledged) ? 0.7 : 1
                               }}
                             >
                               {!systemCollectionsAcknowledged
                                 ? 'Acknowledge First'
-                                : hasValidationErrors 
-                                ? 'Fix Errors First'
                                 : 'Import System'}
                             </button>
                           )}

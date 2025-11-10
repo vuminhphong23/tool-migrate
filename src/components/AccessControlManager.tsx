@@ -65,8 +65,6 @@ export function AccessControlManager({
     permissions: { validateCollections: true, skipInvalidPermissions: true }
   });
   const [migrationResults, setMigrationResults] = useState<any>(null);
-  const [validationResults, setValidationResults] = useState<any>(null);
-  const [isValidating, setIsValidating] = useState(false);
 
   useEffect(() => {
     if (isVisible && step === 'selection') {
@@ -423,74 +421,6 @@ export function AccessControlManager({
     }
   };
 
-  const validateMigration = async () => {
-    setIsValidating(true);
-    setValidationResults(null);
-    
-    try {
-      const rolesToMigrate = sourceRoles.filter(role => selectedRoles.includes(role.id));
-      const policiesToMigrate = sourcePolicies.filter(policy => selectedPolicies.includes(policy.id));
-      const permissionsToMigrate = sourcePermissions.filter(permission => 
-        selectedPermissions.includes(permission.id)
-      );
-
-      const validation = {
-        roles: {
-          selected: rolesToMigrate.length,
-          adminRoles: rolesToMigrate.filter(r => r.admin_access).length,
-          customRoles: rolesToMigrate.filter(r => !r.admin_access).length,
-          issues: [] as string[]
-        },
-        policies: {
-          selected: policiesToMigrate.length,
-          adminPolicies: policiesToMigrate.filter(p => p.admin_access).length,
-          customPolicies: policiesToMigrate.filter(p => !p.admin_access).length,
-          issues: [] as string[]
-        },
-        permissions: {
-          selected: permissionsToMigrate.length,
-          orphaned: sourcePermissions.filter(p => !p.policy).length,
-          issues: [] as string[]
-        },
-        warnings: [] as string[],
-        canMigrate: true
-      };
-
-      if (rolesToMigrate.length === 0 && policiesToMigrate.length === 0 && permissionsToMigrate.length === 0) {
-        validation.warnings.push('No roles, policies, or permissions selected for migration');
-        validation.canMigrate = false;
-      }
-
-      if (validation.roles.adminRoles > 0 && !migrationOptions.roles?.skipAdminRoles) {
-        validation.warnings.push(`${validation.roles.adminRoles} admin roles selected - this may cause security issues`);
-      }
-
-      if (validation.policies.adminPolicies > 0 && !migrationOptions.policies?.skipAdminPolicies) {
-        validation.warnings.push(`${validation.policies.adminPolicies} admin policies selected - this may cause security issues`);
-      }
-
-      if (validation.permissions.orphaned > 0) {
-        validation.warnings.push(`${validation.permissions.orphaned} orphaned permissions found (no policy assigned)`);
-      }
-
-      setValidationResults(validation);
-      
-      onStatusUpdate({
-        type: validation.canMigrate ? (validation.warnings.length > 0 ? 'warning' : 'success') : 'error',
-        message: validation.canMigrate 
-          ? `Validation completed: ${rolesToMigrate.length} roles, ${policiesToMigrate.length} policies, ${permissionsToMigrate.length} permissions ready to migrate`
-          : 'Validation failed - please check issues before migration'
-      });
-
-    } catch (error: any) {
-      onStatusUpdate({
-        type: 'error',
-        message: `Validation error: ${error.message}`
-      });
-    } finally {
-      setIsValidating(false);
-    }
-  };
 
   const executeMigration = async () => {
     setLoading(true);
@@ -668,23 +598,6 @@ export function AccessControlManager({
                     }}
                   >
                     Refresh Data
-                  </button>
-                  
-                  <button
-                    onClick={validateMigration}
-                    disabled={loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0)}
-                    style={{
-                      backgroundColor: '#f59e0b',
-                      color: 'white',
-                      padding: '0.75rem 1.5rem',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 'not-allowed' : 'pointer',
-                      fontSize: '0.875rem',
-                      opacity: loading || isValidating || (selectedRoles.length === 0 && selectedPolicies.length === 0 && selectedPermissions.length === 0) ? 0.6 : 1
-                    }}
-                  >
-                    {isValidating ? 'Validating...' : 'Validate Migration'}
                   </button>
                   
                   <button
@@ -1472,7 +1385,6 @@ export function AccessControlManager({
                       <button
                         onClick={() => {
                           setMigrationResults(null);
-                          setValidationResults(null);
                         }}
                         style={{
                           backgroundColor: '#6b7280',
@@ -1486,59 +1398,6 @@ export function AccessControlManager({
                       >
                         Clear Results
                       </button>
-                    </div>
-                  </div>
-                )}
-                
-                {/* Validation Results */}
-                {validationResults && (
-                  <div style={{ 
-                    backgroundColor: validationResults.canMigrate ? '#f0f9ff' : '#fef2f2', 
-                    padding: '1.5rem', 
-                    borderRadius: '8px', 
-                    marginBottom: '1.5rem',
-                    border: `1px solid ${validationResults.canMigrate ? '#0ea5e9' : '#f87171'}`
-                  }}>
-                    <h4 style={{ margin: '0 0 1rem 0', color: validationResults.canMigrate ? '#0369a1' : '#dc2626' }}>
-                      🔍 Validation Results
-                    </h4>
-                    
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Roles: {validationResults.roles.selected}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Admin: {validationResults.roles.adminRoles} | Custom: {validationResults.roles.customRoles}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Policies: {validationResults.policies.selected}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Admin: {validationResults.policies.adminPolicies} | Custom: {validationResults.policies.customPolicies}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem' }}>Permissions: {validationResults.permissions.selected}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Orphaned: {validationResults.permissions.orphaned}</div>
-                      </div>
-                    </div>
-
-                    {validationResults.warnings.length > 0 && (
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.875rem', marginBottom: '0.5rem', color: '#f59e0b' }}>⚠️ Warnings:</div>
-                        {validationResults.warnings.map((warning: string, index: number) => (
-                          <div key={index} style={{ fontSize: '0.75rem', color: '#92400e', marginBottom: '0.25rem' }}>
-                            • {warning}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div style={{ 
-                      marginTop: '1rem', 
-                      padding: '0.75rem', 
-                      backgroundColor: validationResults.canMigrate ? '#dcfce7' : '#fee2e2',
-                      borderRadius: '4px',
-                      fontSize: '0.875rem',
-                      fontWeight: '500',
-                      color: validationResults.canMigrate ? '#166534' : '#dc2626'
-                    }}>
-                      {validationResults.canMigrate ? '✅ Ready to migrate' : '❌ Migration blocked - resolve issues first'}
                     </div>
                   </div>
                 )}
@@ -1638,7 +1497,6 @@ export function AccessControlManager({
                   setMigrationResults(null);
                   setSelectedRoles([]);
                   setSelectedPolicies([]);
-                  setValidationResults(null);
                 }}
                 style={{
                   backgroundColor: '#7c3aed',
