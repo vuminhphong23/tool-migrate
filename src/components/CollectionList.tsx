@@ -656,7 +656,13 @@ export function CollectionList({
         const deletedFields = collectionFields.filter((f: any) => f.action === 'delete');
         const modifiedFields = collectionFields.filter((f: any) => f.action === 'update');
         
-        if (newFields.length > 0 || deletedFields.length > 0 || modifiedFields.length > 0 || collectionRelations.length > 0) {
+        // Check if collection itself has changes (metadata, icon, note, etc.)
+        const hasCollectionMetadataChanges = diffArray.length > 0 && 
+          diffArray.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+        
+        // Include if: has field changes OR relation changes OR collection metadata changes
+        if (newFields.length > 0 || deletedFields.length > 0 || modifiedFields.length > 0 || 
+            collectionRelations.length > 0 || hasCollectionMetadataChanges) {
           modifiedCollections.push({
             ...colItem,
             collection: collectionName,
@@ -664,6 +670,8 @@ export function CollectionList({
             data: collectionData,
             fields: collectionFields,
             relations: collectionRelations,
+            diff: diffArray,
+            hasMetadataChanges: hasCollectionMetadataChanges,
             fieldChanges: collectionFields.map((f: any) => ({
               field: f.fieldName,
               action: f.action,
@@ -1118,18 +1126,25 @@ export function CollectionList({
           ].filter((col: any) => {
             if (!selectedSet.has(col.collection)) return false;
             
-            const hasCollectionDiff = col.diff && Array.isArray(col.diff) && col.diff.length > 0 
-              && col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind));
+            // New or deleted collections always have changes
+            if (col.action === 'create' || col.action === 'delete') return true;
             
+            // Check for collection metadata changes (icon, note, sort, etc.)
+            const hasCollectionMetadataChanges = col.hasMetadataChanges || 
+              (col.diff && Array.isArray(col.diff) && col.diff.length > 0 && 
+               col.diff.some((d: any) => ['N', 'E', 'D'].includes(d.kind)));
+            
+            // Check for field changes
             const hasFieldChanges = (col.newFieldsCount && col.newFieldsCount > 0) ||
                                    (col.deletedFieldsCount && col.deletedFieldsCount > 0) ||
-                                   (col.modifiedFieldsCount && col.modifiedFieldsCount > 0);
+                                   (col.modifiedFieldsCount && col.modifiedFieldsCount > 0) ||
+                                   (col.fields && col.fields.length > 0);
             
+            // Check for relation changes
             const hasRelationChanges = col.relations && col.relations.length > 0;
             
-            const isNewOrDeleted = col.action === 'create' || col.action === 'delete';
-            
-            return hasCollectionDiff || hasFieldChanges || hasRelationChanges || isNewOrDeleted;
+            // Include if ANY type of change exists
+            return hasCollectionMetadataChanges || hasFieldChanges || hasRelationChanges;
           }).length;
           
           return (
