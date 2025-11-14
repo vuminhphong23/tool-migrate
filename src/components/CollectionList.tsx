@@ -261,7 +261,16 @@ export function CollectionList({
         throw new Error('Invalid snapshot response');
       }
       
-      setSchemaSnapshot(snapshot);
+      // Remove systemFields property from collections as it's not allowed in schema/diff
+      const cleanedSnapshot = {
+        ...snapshot,
+        collections: snapshot.collections.map((col: any) => {
+          const { systemFields, ...rest } = col;
+          return rest;
+        })
+      };
+      
+      setSchemaSnapshot(cleanedSnapshot);
       setSchemaMigrationStep('diff');
       
       onStatusUpdate({
@@ -287,7 +296,24 @@ export function CollectionList({
       const { DirectusClient } = await import('../lib/DirectusClient');
       const targetClient = new DirectusClient(targetUrl, targetToken);
       
-      const response = await targetClient.post('/schema/diff?force=true', schemaSnapshot);
+      // Recursively remove systemFields from the entire payload
+      const removeSystemFields = (obj: any): any => {
+        if (Array.isArray(obj)) {
+          return obj.map(item => removeSystemFields(item));
+        } else if (obj !== null && typeof obj === 'object') {
+          const { systemFields, ...rest } = obj;
+          const cleaned: any = {};
+          for (const key in rest) {
+            cleaned[key] = removeSystemFields(rest[key]);
+          }
+          return cleaned;
+        }
+        return obj;
+      };
+      
+      const cleanPayload = removeSystemFields(schemaSnapshot);
+      
+      const response = await targetClient.post('/schema/diff?force=true', cleanPayload);
       const diffResult = response.data || response;
       
       if (!diffResult || !diffResult.diff || !diffResult.hash) {
