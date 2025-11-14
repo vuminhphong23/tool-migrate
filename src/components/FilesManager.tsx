@@ -182,27 +182,44 @@ export function FilesManager({
     setProgress({ current: 0, total: selectedFiles.length })
 
     try {
-      onStatusUpdate({
-        type: 'info',
-        message: 'Step 1/2: Migrating folder structure...'
+      // Get unique folder IDs from selected files
+      const selectedFilesData = files.filter(f => selectedFiles.includes(f.id))
+      const uniqueFolderIds = new Set<string>()
+      
+      selectedFilesData.forEach(file => {
+        if (file.folder) {
+          uniqueFolderIds.add(file.folder)
+        }
       })
 
-      const foldersResult = await importFolders(
-        sourceUrl,
-        sourceToken,
-        targetUrl,
-        targetToken
-      )
+      let folderMapping: Map<string, string> | undefined = undefined
 
-      if (!foldersResult.success) {
-        throw new Error(`Failed to migrate folders: ${foldersResult.error?.message || 'Unknown error'}`);
+      // Only migrate folders if there are files in folders (not root files)
+      if (uniqueFolderIds.size > 0) {
+        onStatusUpdate({
+          type: 'info',
+          message: `Step 1/2: Migrating ${uniqueFolderIds.size} required folder(s)...`
+        })
+
+        const foldersResult = await importFolders(
+          sourceUrl,
+          sourceToken,
+          targetUrl,
+          targetToken,
+          Array.from(uniqueFolderIds)
+        )
+
+        if (!foldersResult.success) {
+          throw new Error(`Failed to migrate folders: ${foldersResult.error?.message || 'Unknown error'}`);
+        }
+
+        folderMapping = foldersResult.folderMapping
+        await loadTargetFolders();
       }
-
-      await loadTargetFolders();
 
       onStatusUpdate({
         type: 'info',
-        message: 'Step 2/2: Migrating files...'
+        message: uniqueFolderIds.size > 0 ? 'Step 2/2: Migrating files...' : 'Migrating files...'
       })
 
       const result = await importFiles(
@@ -213,7 +230,7 @@ export function FilesManager({
         selectedFiles,
         {
           preserveId: true,
-          folderMapping: foldersResult.folderMapping, 
+          folderMapping, 
           onProgress: (current, total) => {
             setProgress({ current, total })
           }
